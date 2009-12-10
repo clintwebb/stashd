@@ -8,7 +8,7 @@ DEBUG_LIBS=
 ARGS=-Wall -O2
 # Libraries that the stash library uses.
 STASH_LIBS=
-STASHD_LIBS=-expbuf
+STASHD_LIBS=-lexpbuf
 LIBS=$(STASHD_LIBS) $(STASH_LIBS)
 
 OBJS=stashd.o
