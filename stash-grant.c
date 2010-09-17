@@ -95,6 +95,11 @@ int main(int argc, char **argv)
 	user_t *user = NULL;
 	namespace_t *ns = NULL;
 	table_t *table = NULL;
+	stash_t *stash;
+	stash_nsid_t nsid;
+	stash_tableid_t tid;
+	stash_userid_t uid;
+	stash_result_t res;
 
 	struct {
 		const char *basedir;
@@ -221,7 +226,7 @@ int main(int argc, char **argv)
 		storage_lock_master(storage, params.basedir);
 		storage_process(storage, params.basedir, KEEP_OPEN, IGNORE_DATA);
 		
-		// if the namespace is available, then create it.
+		// 
 		user = storage_getuser(storage, NULL_USER_ID, params.user);
 		if (user == NULL) {
 			fprintf(stderr, "Username '%s' does not exist.\n", params.user);
@@ -267,7 +272,74 @@ int main(int argc, char **argv)
 	}
 	else {
 		// network version.
-		assert(0);
+		
+		stash = stash_init(NULL);
+		assert(stash);
+		
+		// add our username and password to the authority... in future 
+		// versions, private and public keys may be used instead.
+		assert(params.conn.username);
+		assert(params.conn.password);
+		stash_authority(stash, params.conn.username, params.conn.password);
+		
+		// add our known host to the server list.
+		assert(params.conn.host);
+		stash_addserver(stash, params.conn.host, 10);
+		
+		// connect to the database... check error code.
+		// although it is not necessary to connect now, because if we dont, 
+		// the first operation we do will attempt to connect if we are not 
+		// already connected.  However, it is useful right now to attempt to 
+		// connect so that we can report the error back to the user.  Easier 
+		// to do it here and it doesn't cost anything.
+		res = stash_connect(stash);
+		if (res != 0) {
+			fprintf(stderr, "Unable to connect: %04X:%s\n", res, stash_err_text(res));
+		}
+		else {
+			
+			// get the namespaceID, because we will be using for the request.
+			nsid = 0;
+			tid = 0;
+			res = STASH_ERR_OK;
+			
+			if (params.namespace) {
+				res = stash_get_namespace_id(stash, params.namespace, &nsid);
+				if (res != STASH_ERR_OK) { fprintf(stderr, "error parsing namespace: %d:'%s'\n", res, stash_err_text(res)); }
+			}
+
+			if (params.table) {
+				assert(nsid > 0);
+				res = stash_get_table_id(stash, nsid, params.table, &tid);
+				if (res != STASH_ERR_OK) { fprintf(stderr, "error parsing table: %d:'%s'\n", res, stash_err_text(res)); }
+			}
+			
+			if (params.user) {
+				res = stash_get_user_id(stash, params.user, &uid);
+				if (res != STASH_ERR_OK) { fprintf(stderr, "error parsing username: %d:'%s'\n", res, stash_err_text(res)); }
+			}
+			
+			// attempt to set the grant
+			if (res == STASH_ERR_OK) { 
+				
+				res = stash_grant(stash, uid, nsid, tid, params.rights);
+				if (res != STASH_ERR_OK) { fprintf(stderr, "error setting grant: %d:'%s'\n", res, stash_err_text(res)); }
+				else {
+					result = 0;
+					
+					if (verbose) {
+						assert(table->name);
+						printf("Table '%s' created.\n", table->name);
+					}
+					assert(result == 0);
+				}
+			}
+		}
+		
+		// cleanup the storage 
+		stash_free(stash);
+		stash = NULL;		
+		
 	}
 	
 	return(result);

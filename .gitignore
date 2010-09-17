@@ -1,2 +1,12 @@
 *.o
 stashd
+stash-adduser
+stash-create
+stash-create-namespace
+stash-create-table
+stash-dump
+stash-grant
+stash-setpassword
+stash-testplan
+testplan/
+old/

@@ -1,9 +1,7 @@
 //-----------------------------------------------------------------------------
-// stash-adduser
-//	Tool to add a user to the stash.  It will be able to add a user directly to 
-//	the stash files if it is not currently loaded, or it can connect and add a 
-//	user through the admin interface (requires an existing user with admin 
-//	privs).
+// stash-setpassword
+//	Tool to change the password of an existing user.  If the user is not the 
+//	same one as is loggin in, then the user must have the ADDUSER right.
 //-----------------------------------------------------------------------------
 
 
@@ -22,7 +20,7 @@
 
 
 
-#define PACKAGE						"stash-adduser"
+#define PACKAGE						"stash-setpassword"
 #define VERSION						"0.10"
 
 
@@ -40,8 +38,8 @@ short int verbose = 0;
 // print some info to the user, so that they can know what the parameters do.
 static void usage(void) {
 	printf(PACKAGE " " VERSION "\n");
-	printf("Required params:\n");
-	printf(" -u <username>      new username\n");
+	printf("Params:\n");
+	printf(" -u <username>      username\n");
 	printf(" -p <password>      new password\n");
 	printf("\n");
 	printf("Direct file method:\n");
@@ -76,7 +74,6 @@ int main(int argc, char **argv)
 	const char *host = NULL;
 	const char *username = NULL;
 	const char *password = NULL;
-	userid_t uid;
 	user_t *user;
 	stash_result_t res;
 	
@@ -130,6 +127,10 @@ int main(int argc, char **argv)
 		fprintf(stderr, "cannot specify both a directory and a host.\n");
 		exit(1);
 	}
+	else if (newpass == NULL) {
+		fprintf(stderr, "missing required parameter: -p\n");
+		exit(1);
+	}
 	else if (newuser == NULL) {
 		fprintf(stderr, "missing required parameter: -u\n");
 		exit(1);
@@ -151,20 +152,19 @@ int main(int argc, char **argv)
 		storage_process(storage, basedir, KEEP_OPEN, IGNORE_DATA);
 		
 		// if the namespace is available, then create it.
-		if (storage_username_avail(storage, newuser) == 0) {
-			fprintf(stderr, "Username '%s' is already in use.\n", newuser);
+		assert(newuser);
+		user = storage_getuser(storage, NULL_USER_ID, newuser);
+		if (user == NULL) {
+			fprintf(stderr, "Username '%s' does not exist.\n", newuser);
 			result = 1;
 		}
 		else {
-			user = storage_create_username(storage, NULL_USER_ID, newuser);
-			assert(user);
 			assert(user->uid > 0);
-			if (newpass) {
-				storage_set_password(storage, NULL_USER_ID, user->uid, newpass);
-			}
+			
+			storage_set_password(storage, NULL_USER_ID, user->uid, newpass);
 
 			if (verbose) {
-				printf("Username '%s' created.\n", newuser);
+				printf("Password for user '%s' changed.\n", newuser);
 				assert(result == 0);
 			}
 		}
@@ -203,33 +203,24 @@ int main(int argc, char **argv)
 		}
 		else {
 
-			// attempt to create the user id.
-			uid = 0;
-			res = stash_create_username(stash, newuser, &uid);
+			res = stash_set_password(stash, 0, newuser, newpass);
 			if (res != STASH_ERR_OK) {
 				switch(res) {
-					case STASH_ERR_USEREXISTS:
-						fprintf(stderr, "Username '%s' is already in use.\n", newuser);
+					case STASH_ERR_OK:
+						if (verbose) { printf("Password set for user '%s'.\n", newuser); }
+						break;
+					
+					case STASH_ERR_USERNOTEXIST:
+						fprintf(stderr, "Username '%s' does not exist.\n", newuser);
+						break;
+					case STASH_ERR_INSUFFICIENTRIGHTS:
+						fprintf(stderr, "Insufficient rights to change passwords.\n");
 						break;
 					default:
 						fprintf(stderr, "Unexpected error: %04X:%s\n", res, stash_err_text(res));
 						break;
 				}
 				result = 1;
-			}
-			else {
-				
-				assert(uid > 0);
-				
-				if (newpass) {
-					res = stash_set_password(stash, uid, NULL, newpass);
-					assert(res == 0);
-				}
-				
-				if (verbose) {
-					printf("Username '%s' created.\n", newuser);
-				}
-				assert(result == 0);
 			}
 		}
 		

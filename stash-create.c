@@ -72,7 +72,7 @@ int main(int argc, char **argv)
 				
 			default:
 				fprintf(stderr, "Illegal argument \"%c\"\n", c);
-				return;
+				return 1;
 				
 		}
 	}

@@ -133,7 +133,7 @@ int main(int argc, char **argv)
 		// process the main meta file;
 		assert(basedir);
 		storage_lock_master(storage, basedir);
-		storage_process(storage, basedir, KEEP_OPEN);
+		storage_process(storage, basedir, KEEP_OPEN, IGNORE_DATA);
 		
 		// if the namespace is available, then create it.
 		if (storage_namespace_avail(storage, namespace) == 0) {
