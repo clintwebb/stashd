@@ -9,6 +9,13 @@
 #include <risp.h>
 
 
+// If we are using 1.x version of libevent, we need to do 
+// things slightly different than if we are using 2.x of libevent.
+#if ( _EVENT_NUMERIC_VERSION < 0x02000000 )
+#define LIBEVENT_OLD_VER  
+#endif
+
+
 #if (LIBSTASH_VERSION < 0x00000100)
 #error "Requires libstash v0.01 or higher."
 #endif
@@ -183,11 +190,13 @@ typedef struct {
 	// to the other nodes.
 	void (*update_callback)(char *data, int length, void *usrptr);
 	void *update_usrptr;
-	
-	struct event_base *evbase;
-	struct event *write_event;
-	expbuf_t *writebuf;
-	
+
+	// if we are using libevent2.0, then we can use a buffer and write it out periodically.  Useful for very busy systems.
+	#if ( _EVENT_NUMERIC_VERSION >= 0x02000000 )
+		struct event_base *evbase;
+		struct event *write_event;
+		expbuf_t *writebuf;
+	#endif
 	
 	short int internally_created;
 } storage_t;
@@ -239,7 +248,9 @@ void storage_delete(storage_t *storage, user_t *requestor, row_t *row, skey_t *k
 attr_t * storage_setattr(storage_t *storage, user_t *requestor, row_t *row, skey_t *key, value_t *value, int expires);
 attr_t * storage_getattr(row_t *row, skey_t *key);
 
+#if ( _EVENT_NUMERIC_VERSION >= 0x02000000 )
 void storage_set_evbase(storage_t *storage, struct event_base *evbase);
+#endif
 
 list_t * storage_query(storage_t *storage, table_t *table, stash_cond_t *condition);
 

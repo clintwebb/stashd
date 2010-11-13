@@ -1150,11 +1150,13 @@ storage_t * storage_init(storage_t *st)
 	
 	storage->buf_value = expbuf_init(NULL, 0);
 	assert(storage->buf_value);
-	
+
+	#if ( _EVENT_NUMERIC_VERSION >= 0x02000000 )
 	storage->evbase = NULL;
 	storage->write_event = NULL;
 	storage->writebuf = expbuf_init(NULL, 0);
 	assert(storage->writebuf);
+	#endif
 	
 	return(storage);
 }
@@ -1186,13 +1188,15 @@ void storage_free(storage_t *storage)
 	assert(storage);
 	
 	// at this point, if the write event existed, it should have already been processed.
+	#if ( _EVENT_NUMERIC_VERSION >= 0x02000000 )
 	storage->evbase = NULL;
 	assert(storage->write_event == NULL);
 	assert(storage->writebuf);
 	assert(BUF_LENGTH(storage->writebuf) == 0);
 	storage->writebuf = expbuf_free(storage->writebuf);
 	assert(storage->writebuf == NULL);
-
+	#endif
+	
 	assert(storage->buf_value);
 	assert(BUF_LENGTH(storage->buf_value) == 0);
 	storage->buf_value = expbuf_free(storage->buf_value);
@@ -1524,6 +1528,8 @@ int storage_username_avail(storage_t *storage, const char *username)
 	return(result);
 }
 
+#if ( _EVENT_NUMERIC_VERSION >= 0x02000000 )
+
 static void write_callback(const int fd, const short which, void *arg)
 {
 	storage_t *storage = arg;
@@ -1554,6 +1560,7 @@ static void write_callback(const int fd, const short which, void *arg)
 	event_free(storage->write_event);
 	storage->write_event = NULL;
 }
+#endif
 
 static void addTimeCmd(expbuf_t *buf, risp_command_t cmd)
 {
@@ -1612,6 +1619,7 @@ static void saveOperation(storage_t *storage, risp_command_t cmd, expbuf_t *buf,
 	assert(storage->file_handle >= 0);
 	
 	// write the data to the file.
+#if ( _EVENT_NUMERIC_VERSION >= 0x02000000 )
 	if (storage->evbase) {
 		// add the data to the write buffer.
 		expbuf_addbuf(storage->writebuf, storage->buf_top);
@@ -1624,6 +1632,7 @@ static void saveOperation(storage_t *storage, risp_command_t cmd, expbuf_t *buf,
 		}
 	}
 	else {
+#endif
 		// write it out, and then increment our file-size counter.
 		n = write(storage->file_handle, BUF_DATA(storage->buf_top), BUF_LENGTH(storage->buf_top));
 		assert(n == BUF_LENGTH(storage->buf_top));
@@ -1633,7 +1642,9 @@ static void saveOperation(storage_t *storage, risp_command_t cmd, expbuf_t *buf,
 		if (storage->file_size >= MAX_FILESIZE) { 
 			assert(0);
 		}
+#if ( _EVENT_NUMERIC_VERSION >= 0x02000000 )
 	}
+#endif
 	
 	// parse the operation internally.
 	cmdOperation(storage, BUF_LENGTH(storage->buf_op), BUF_DATA(storage->buf_op));
@@ -2277,14 +2288,14 @@ attr_t * storage_getattr(row_t *row, skey_t *key)
 }
 
 
-
+#if ( _EVENT_NUMERIC_VERSION >= 0x02000000 )
 void storage_set_evbase(storage_t *storage, struct event_base *evbase)
 {
 	assert(storage && evbase);
 	assert(storage->evbase == NULL);
 	storage->evbase = evbase;
 }
-
+#endif
 
 
 // will compare the attributes of the row against hte condition.  If condition 

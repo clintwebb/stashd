@@ -1,7 +1,7 @@
 ## make file for stashd.
 
 all: stash-create stash-adduser stash-create-namespace \
-     stashd stash-grant stash-dump stash-testplan \
+     stashd stash-grant stash-dump \
      stash-setpassword stash-create-table
 
 DEBUG_LIBS=
