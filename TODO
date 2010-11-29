@@ -1,0 +1,39 @@
+stash
+tasks to do
+
+
+ *  server-side sorting. [sorting]
+
+ *  remove control structure, and instead use global variables.  There is no point at all in using the control structure.
+
+ *  when deleting a table or a namespace, need to go through each user and check the rights list and remove all rights that point to the table or namespace we are deleting.
+
+ *  stashd needs to handle locking of tables/names.
+
+ *  create tool to revoke rights.
+
+ *  create tool to backup data sources (force a datafile split, and backup everything except that last file).
+
+ *  create tool to compact the data source (see notes/compact_tool.txt)
+
+ *  the connections need to take the priority into account when establishing connections.  First iteration allows for it to just attempt the first, and if that drops off, try the next... and so on.
+
+ *  stashd does not shutdown cleanly while a client is connected.
+       stashd: stashd.c:501: client_shutdown: Assertion `client->closing == 0' failed.
+
+ *  stashd needs a startup option which indicates that text threshold that forces text to be written out to seperate files instead of being included in the main file.   We should also include an option when querying data to also include external data.  Normally this would not be wanted, but could very well be needed in some instances.
+ 
+ *  manpage: stashd
+ *  manpage: stash-create-namespace
+ *  manpage: stash-dump
+ *  manpage: stash-testplan
+ *  manpage: stash-create-table
+ *  manpage: stash-grant
+ *  manpage: stash-adduser
+ *  manpage: stash-create
+ *  manpage: stash-setpassword
+
+
+
+
+

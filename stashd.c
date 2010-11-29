@@ -109,6 +109,7 @@ typedef struct {
 	risp_t *risp_req;
 	risp_t *risp_data;
 	risp_t *risp_attr;
+	risp_t *risp_sort;
 	
 	// linked list of listening sockets.
 	list_t *servers;
@@ -159,6 +160,13 @@ typedef struct {
 } raw_attr_t;
 
 
+typedef struct __sortentry_t {
+	stash_keyid_t kid;
+	skey_t *key;
+	int desc;
+	struct __sortentry_t *next;
+} sortentry_t;
+
 
 typedef struct {
 	evutil_socket_t handle;
@@ -177,7 +185,12 @@ typedef struct {
 	list_t *raw_attrlist;		// raw_attr_t - list of attributes parsed 
 	
 	int req_id;
+	
+	sortentry_t *sortentry;	// when processing a query that contains sort criteria.
 } client_t;
+
+
+
 
 
 
@@ -211,6 +224,7 @@ static void control_init(control_t *control)
 	control->risp_req = NULL;
 	control->risp_data = NULL;
 	control->risp_attr = NULL;
+	control->risp_sort = NULL;
 	control->verbose = 0;
 	control->daemonize = 0;
 	control->storepath = NULL;
@@ -243,6 +257,7 @@ static void control_cleanup(control_t *control)
 	assert(control->risp == NULL);
 	assert(control->risp_req == NULL);
 	assert(control->risp_data == NULL);
+	assert(control->risp_sort == NULL);
 	assert(control->risp_attr == NULL);
 	assert(control->conncount == 0);
 	assert(control->sigint_event == NULL);
@@ -404,7 +419,13 @@ static void server_listen(server_t *server, char *interface)
 				freeaddrinfo(ai);
 				return;
 			}
+			else {
+				// we've got a listener.
+				server->handle = sfd;
+			}
 		}
+
+		
 
 		assert(server->control);
 		assert(server->control->evbase);
@@ -570,6 +591,9 @@ static void client_init ( client_t *client, server_t *server, evutil_socket_t ha
 	assert(client->read_event);
 	s = event_add(client->read_event, NULL);
 	assert(s == 0);
+	
+	// sortentry field should already be cleared.
+	assert(client->sortentry == NULL);
 }
 
 
@@ -693,6 +717,8 @@ static void client_free(client_t *client)
 	assert(ll_count(client->server->clients) >= 0);
 	
 	client->server = NULL;
+	
+	assert(client->sortentry == NULL);
 }
 
 
@@ -726,6 +752,7 @@ static void client_shutdown(client_t *client)
 static void server_shutdown(server_t *server)
 {
 	client_t *client;
+	int rr;
 	
 	assert(server);
 	assert(server->control);
@@ -733,8 +760,11 @@ static void server_shutdown(server_t *server)
 	// need to close the listener socket.
 	#ifdef LIBEVENT_OLD_VER
 	if(server->handle >= 0) {
-		event_del(&server->listen_event);
-		close(server->handle);
+		printf("stopping server event.\n");
+		rr = event_del(&server->listen_event);
+		assert(rr == 0);
+		rr = close(server->handle);
+		assert(rr == 0);
 		server->handle = INVALID_HANDLE;
 	}
 	#else
@@ -747,6 +777,7 @@ static void server_shutdown(server_t *server)
 	assert(server->clients);
 	ll_start(server->clients);
 	while (( client = ll_next(server->clients))) {
+		printf("shutting down client\n");
 		client_shutdown(client);
 	}
 	ll_finish(server->clients);
@@ -799,10 +830,13 @@ static void sigint_handler(evutil_socket_t fd, short what, void *arg)
 	// need to initiate an RQ shutdown.
 	assert(control);
 	
+	printf("SIGINT received.\n\n");
+	
 	// need to send a message to each node telling them that we are shutting down.
 	assert(control->servers);
 	ll_start(control->servers);
 	while ((server = ll_next(control->servers))) {
+		printf("shutting down server.\n");
 		server_shutdown(server);
 	}
 	ll_finish(control->servers);
@@ -815,6 +849,8 @@ static void sigint_handler(evutil_socket_t fd, short what, void *arg)
 	assert(control->sighup_event == NULL);
 //	event_free(control->sighup_event);
 //	control->sighup_event = NULL;
+	
+	printf("SIGINT complete\n");
 }
 
 
@@ -2241,6 +2277,231 @@ static stash_cond_t * parse_condition(table_t *table, const risp_length_t length
 }
 
 
+static void cmdSortEntry(client_t *client, const risp_length_t length, const risp_data_t *data)
+{
+	risp_t *risp;
+	int processed;
+	stash_keyid_t keyid;
+	int desc = 0;
+	sortentry_t *curr;
+	sortentry_t *entry;
+	
+	// create the risp object.
+	risp = risp_init(NULL);  
+	assert(risp);
+	
+	// parse the data into the risp object.
+	processed = risp_process(risp, NULL, length, data);
+	assert(processed == length);
+
+	assert(risp_isset(risp, STASH_CMD_KEY_ID));
+	keyid = risp_getvalue(risp, STASH_CMD_KEY_ID);
+	assert(keyid > 0);
+	
+	if (risp_isset(risp, STASH_CMD_SORTDESC)) {
+		desc = 1;
+	}
+	
+	entry = calloc(1, sizeof(*entry));
+	entry->kid = keyid;
+	entry->desc = desc;
+	assert(entry->next == NULL);
+	assert(entry->key == NULL);
+	
+	
+	if (client->sortentry == NULL) {
+		client->sortentry = entry;
+	}
+	else {
+		// there is already one sortentry, so we need to go down the list and find the last one.
+		curr = client->sortentry;
+		while (curr->next) {
+			curr = curr->next;
+		}
+		assert(curr);
+		assert(curr->next == NULL);
+		curr->next = entry;
+	}
+}
+
+
+static int compare_value(stash_value_t *va, stash_value_t *vb)
+{
+	int result = 0;
+	
+	assert(va && vb);
+	
+	if (va->valtype == STASH_VALTYPE_INT && vb->valtype == STASH_VALTYPE_INT) {
+		result = va->value.number - vb->value.number;
+	}
+	else if (va->valtype == STASH_VALTYPE_STR && vb->valtype == STASH_VALTYPE_STR) {
+		result = strncmp(va->value.str, vb->value.str, vb->datalen < va->datalen ? vb->datalen : va->datalen);
+	}
+	else {
+		// need to compare other type combinations.
+		assert(0);
+	}
+	
+	return(result);
+}
+
+// a and b point to elements in the list... and is not the pointer that the element has in it.  Therefore, it needs to be dereferenced a bit.
+static int sortfn(row_t *ra, row_t *rb, sortentry_t *sort) 
+{
+	sortentry_t *curr;
+	int result = 0;
+	attr_t *va, *vb;
+	
+	assert(ra && rb && sort);
+	
+	curr = sort;
+	while (curr != NULL) {
+
+		// make sure that we have looked up the key from the keyid.
+		assert(curr->kid > 0);
+		if (curr->key == NULL) {
+			assert(ra->table);
+			assert(ra->table == rb->table);
+			curr->key = storage_getkey(ra->table, curr->kid, NULL);
+			assert(curr->key);
+		}
+		
+		// if we are sorting descendingly, we need to reverse the order we are looking.
+		if (curr->desc == 0) {
+			va = storage_getattr(ra, curr->key);
+			vb = storage_getattr(rb, curr->key);
+		}
+		else {
+			vb = storage_getattr(ra, curr->key);
+			va = storage_getattr(rb, curr->key);
+		}
+		if (va == NULL && vb == NULL) { return(0); }
+		else if (va && vb == NULL) { return(1); }
+		else if (va == NULL && vb) { return(-1); }
+		else {
+			assert(va && vb);
+
+			assert(va->value && vb->value);
+			
+			result = compare_value(va->value, vb->value);
+			
+			
+			if (result == 0) { curr = curr->next; }
+			else { return(result); }
+		}
+	}
+	
+	return(0);
+}
+
+
+
+
+// sorting the rows based on the sort criteria.  This sorting algorithm is 
+// probably not the best, but it will at least do the sort.  Performance 
+// improvements can be done in the future.
+static void sortRows(list_t *rows, sortentry_t *sort)
+{
+	row_t *holder = NULL; 
+	row_t *row;
+	int subs = 0;
+	int result;
+	
+	// since we will be moving items from one list to another, partially 
+	// sorting with each iteration, we will have two lists.  one will be 
+	// the original list, and the other will be a temporary list.
+	list_t *la, *lb;
+	
+	// if there is only one entry in the list, dont bother sorting, and our 
+	// algorithm wont like it much if only one entry in the list.
+	if (ll_count(rows) > 1) {
+
+		// we will always be popping items off LA and putting it in LB.  
+		// To start with, LA will point to the existing rows list.  
+		// LB will point to a temporary list.
+		la = rows;
+		lb = ll_init(NULL);
+		
+		// since we have the rows in a list, we will keep processing it until 
+		// we dont have any substitutions (then we will know it is sorted)
+		do {
+			subs = 0;
+			assert(holder == NULL);
+		
+			
+			while ((row = ll_pop_head(la))) {
+			
+				// we will first pop the first entry off the top of the list and put it in a holding.
+				if (holder == NULL) {
+					holder = row;
+				}
+				else {
+					// then we will loop through the rest of the entries in the list
+					
+					
+					// compare against the one in holding.
+					result = sortfn(holder, row, sort);
+					
+					// If the one in holding is less (assuming ascending), then 
+					// it gets put at the tail of the temporary list.
+					// if the one popped off is greater than holding, then it 
+					// is straight away put at the tail of the list.
+					if (result <= 0) {
+						ll_push_tail(lb, holder);
+						holder = row;
+					}
+					else {
+						// the new entry was less than the one in holding, so 
+						// push it straight to the new list, and increment our 
+						// 'subs' counter, because we skipped the one in 
+						// holding.
+						ll_push_tail(lb, row);
+						subs ++;
+					}
+					
+				}
+				// when all items are popped off the original list, we start again.
+			}
+			
+			// we still have an entry in the holder, which we need to push to the end of LB.
+			assert(holder);
+			assert(ll_count(la) == 0);
+			assert(ll_count(lb) > 0);
+			ll_push_tail(lb, holder);
+			holder = NULL;
+			
+			// we've moved the entries from LA to LB, now we need to switch them, ready for the next 
+			if (la == rows) {
+				la = lb;
+				lb = rows;
+			}
+			else {
+				lb = la;
+				la = rows;
+			}
+			
+		} while (subs > 0);
+		
+		if (ll_count(rows) == 0) {
+			// we landed on an odd sort cycle, need to move the entries back to the original list.
+			assert(ll_count(la) > 0);
+			assert(ll_count(lb) == 0);
+			while ((row = ll_pop_head(la))) {
+				ll_push_tail(rows, row);
+			}
+			
+			// free up the temporary list.
+			la = ll_free(la);
+			assert(la == NULL);
+		}
+		else {
+			lb = ll_free(lb);
+			assert(lb == NULL);
+		}
+		assert(ll_count(rows) > 0);
+	}
+}
+
 
 static void cmdQuery(client_t *client, const risp_length_t length, const risp_data_t *data)
 {
@@ -2259,6 +2520,9 @@ static void cmdQuery(client_t *client, const risp_length_t length, const risp_da
 	int currtime;
 	int row_count;
 	int attr_count;
+	int len;
+	int processed;
+	int limit;
 	
 	
 	assert(client && length && data);
@@ -2276,6 +2540,17 @@ static void cmdQuery(client_t *client, const risp_length_t length, const risp_da
 
 	gettimeofday(&tv, NULL);
 	currtime = tv.tv_sec;
+	
+	if (risp_isset(rdata, STASH_CMD_SORT)) {
+		// we have sort criteria, so we need to pull it out and put it into a sortentry_t structure.
+
+		assert(client->server->control);
+		assert(client->server->control->risp_sort);
+		assert(client->sortentry == NULL);
+		len = risp_getlength(rdata, STASH_CMD_SORT);
+		processed = risp_process(client->server->control->risp_sort, client, len, risp_getdata(rdata, STASH_CMD_SORT));
+		assert(processed == len);
+	}
 	
 	assert(risp_isset(rdata, STASH_CMD_NAMESPACE_ID));
 	ns = storage_getnamespace(client->server->control->storage, risp_getvalue(rdata, STASH_CMD_NAMESPACE_ID), NULL);
@@ -2313,6 +2588,13 @@ static void cmdQuery(client_t *client, const risp_length_t length, const risp_da
 					condition = NULL;
 				}
 				
+				limit = 0;
+				
+				if (risp_isset(rdata, STASH_CMD_LIMIT)) {
+					limit = risp_getvalue(rdata, STASH_CMD_LIMIT);
+					assert(limit > 0);
+				}
+				
 				// how can we best determine which entries to include?  If we dont have a condition, then return everything.
 				// PERF:  This will be really bad performance.  IT should really look at the keys in the condition structure to determine which one to look at first.  It should be one that is in an EQUALS inside an AND or by itself. 
 				// for now though, we will simply iterate through every row in the table, and return the rows that match all the conditions.
@@ -2335,15 +2617,20 @@ static void cmdQuery(client_t *client, const risp_length_t length, const risp_da
 				buf_attr = expbuf_init(NULL, 0);
 				buf_row = expbuf_init(NULL, 0);
 				
+
+				if (client->sortentry) {
+					// if we have sort criteria, we need to first sort the list of rows.
+					sortRows(rows, client->sortentry);
+				}
 				
 				row_count = 0;
 				while((row = ll_pop_head(rows))) {
 					assert(row->table == table);
 					assert(row->rid > 0);
 					
-					// if the row hasn't expired.
+					// if the row hasn't expired, and we haven't reached our row limit.
 					// TODO: if the row has expired... should we clean it up now?
-					if (row->expires == 0 || row->expires > currtime) {
+					if ((limit == 0 || row_count < limit) && (row->expires == 0 || row->expires > currtime)) {
 						row_count ++;
 						
 						rispbuf_addInt(buf_row, STASH_CMD_ROW_ID, row->rid);
@@ -2404,6 +2691,26 @@ static void cmdQuery(client_t *client, const risp_length_t length, const risp_da
 				client->failcode = STASH_ERR_OK;
 			}
 		}
+	}
+	
+	// if sort criteria was used, we need to free it up.
+	if (client->sortentry != NULL) {
+
+		sortentry_t *next;
+		sortentry_t *curr;
+		
+		// go through the list of sorts, and free each entry.  non-recursive.
+		next = client->sortentry;
+		while (next != NULL) {
+			curr = next;
+			next = curr->next;
+			
+			// there is nothing to free in the struct itself 
+			free(curr);
+		}
+		
+		
+		client->sortentry = NULL;
 	}
 }
 
@@ -2719,6 +3026,13 @@ int main(int argc, char **argv)
 	control->risp_data = risp_init(NULL);
 	assert(control->risp_data);
 	risp_add_command(control->risp_data, STASH_CMD_ATTRIBUTE,   &cmdAttribute);
+
+	assert(control);
+	assert(control->risp_sort == NULL);
+	control->risp_sort = risp_init(NULL);
+	assert(control->risp_sort);
+	risp_add_command(control->risp_sort, STASH_CMD_SORTENTRY,   &cmdSortEntry);
+	
 	
 	assert(control->risp_attr == NULL);
 	control->risp_attr = risp_init(NULL);
@@ -2800,6 +3114,9 @@ int main(int argc, char **argv)
 	control->risp_attr = risp_shutdown(control->risp_attr);
 	assert(control->risp_attr == NULL);
 	
+	assert(control->risp_sort);
+	control->risp_sort = risp_shutdown(control->risp_sort);
+	assert(control->risp_sort == NULL);
 	
 	// cleanup the storage 
 	assert(control);

@@ -592,14 +592,14 @@ static void test_sort(stash_t *stash, stash_nsid_t nsid, stash_tableid_t tid)
 		printf("\n\n");
 		
 		printf("sorted on name.\n");
-		stash_sort(reply, key_name);
+		stash_sort_onkey(reply, key_name);
 		while (stash_nextrow(reply)) {
 			printf("row retrieved %d, name='%s', sid=%d, code=%d\n", stash_rowid(reply), stash_getstr(reply, key_name), stash_getint(reply, key_sid), stash_getint(reply, key_code));
 		}
 		printf("\n\n");
 
 		printf("sorted on code.\n");
-		stash_sort(reply, key_code);
+		stash_sort_onkey(reply, key_code);
 		while (stash_nextrow(reply)) {
 			printf("row retrieved %d, name='%s', sid=%d, code=%d\n", stash_rowid(reply), stash_getstr(reply, key_name), stash_getint(reply, key_sid), stash_getint(reply, key_code));
 		}
@@ -610,6 +610,177 @@ static void test_sort(stash_t *stash, stash_nsid_t nsid, stash_tableid_t tid)
 	stash_return_reply(reply);
 	stash_cond_free(cond);
 }
+
+
+
+// re-uses the 
+static void test_sortquery(stash_t *stash, stash_nsid_t nsid, stash_tableid_t tid)
+{
+	stash_keyid_t key_name, key_code, key_sid;
+	stash_cond_t *cond = NULL;
+	stash_query_t *query;
+	stash_reply_t *reply;
+	
+	assert(stash && nsid > 0 && tid > 0);
+	
+	printf("\n\nTesting sort query (client side)\n");
+	
+	key_name  = stash_get_key_id(stash, nsid, tid, "name");
+	key_code  = stash_get_key_id(stash, nsid, tid, "code");
+	key_sid   = stash_get_key_id(stash, nsid, tid, "sid");
+
+	cond = __cond_name(0, "sort");
+	assert(cond);
+	
+	query = stash_query_new(nsid, tid);
+	assert(query);
+	stash_query_condition(query, cond);
+	
+	// now query the table to return the row we just created.
+	reply = stash_query_execute(stash, query);
+	if (reply->resultcode != STASH_ERR_OK) {
+		printf("Unable to query row, %d:'%s'.\n", reply->resultcode, stash_err_text(reply->resultcode));
+		sleep(1);
+	}
+	else {
+		
+		printf("\n\ndisplay - unsorted.\n");
+		while (stash_nextrow(reply)) {
+			printf("row retrieved %d, code=%012d, name='%s', sid=%d\n", stash_rowid(reply), stash_getint(reply, key_code), stash_getstr(reply, key_name), stash_getint(reply, key_sid));
+		}
+		printf("\n\n");
+	}
+	stash_return_reply(reply);
+	
+	// add a sort critera to the query.   
+	stash_query_sort(query, key_name, 0);
+	
+	// now query the table to return the row we just created.
+	reply = stash_query_execute(stash, query);
+	if (reply->resultcode != STASH_ERR_OK) {
+		printf("Unable to query row, %d:'%s'.\n", reply->resultcode, stash_err_text(reply->resultcode));
+		sleep(1);
+	}
+	else {
+		
+		printf("\n\ndisplay - sorted on name.\n");
+		while (stash_nextrow(reply)) {
+			printf("row retrieved %d, code=%012d, name='%s', sid=%d\n", stash_rowid(reply), stash_getint(reply, key_code), stash_getstr(reply, key_name), stash_getint(reply, key_sid));
+		}
+		printf("\n\n");
+	}
+	stash_return_reply(reply);
+
+	// add a sort critera to the query.   
+	stash_query_sort_clear(query);
+	stash_query_sort(query, key_code, 0);
+	
+	// now query the table to return the row we just created.
+	reply = stash_query_execute(stash, query);
+	if (reply->resultcode != STASH_ERR_OK) {
+		printf("Unable to query row, %d:'%s'.\n", reply->resultcode, stash_err_text(reply->resultcode));
+		sleep(1);
+	}
+	else {
+		
+		printf("\n\ndisplay - sorted on code.\n");
+		while (stash_nextrow(reply)) {
+			printf("row retrieved %d, code=%012d, name='%s', sid=%d\n", stash_rowid(reply), stash_getint(reply, key_code), stash_getstr(reply, key_name), stash_getint(reply, key_sid));
+		}
+		printf("\n\n");
+	}
+	stash_return_reply(reply);
+	
+	stash_cond_free(cond);
+	stash_query_free(query);
+}
+
+
+// re-uses the 
+static void test_sortquerylimit(stash_t *stash, stash_nsid_t nsid, stash_tableid_t tid)
+{
+	stash_keyid_t key_name, key_code, key_sid;
+	stash_cond_t *cond = NULL;
+	stash_query_t *query;
+	stash_reply_t *reply;
+	int limit=3;
+	
+	assert(stash && nsid > 0 && tid > 0);
+	
+	printf("\n\nTesting sort query (server side)\n");
+	
+	key_name  = stash_get_key_id(stash, nsid, tid, "name");
+	key_code  = stash_get_key_id(stash, nsid, tid, "code");
+	key_sid   = stash_get_key_id(stash, nsid, tid, "sid");
+	
+	cond = __cond_name(0, "sort");
+	assert(cond);
+	
+	query = stash_query_new(nsid, tid);
+	assert(query);
+	stash_query_condition(query, cond);
+	
+	// now query the table to return the row we just created.
+	reply = stash_query_execute(stash, query);
+	if (reply->resultcode != STASH_ERR_OK) {
+		printf("Unable to query row, %d:'%s'.\n", reply->resultcode, stash_err_text(reply->resultcode));
+		sleep(1);
+	}
+	else {
+		
+		printf("\n\ndisplay - unsorted.\n");
+		while (stash_nextrow(reply)) {
+			printf("row retrieved %d, code=%012d, name='%s', sid=%d\n", stash_rowid(reply), stash_getint(reply, key_code), stash_getstr(reply, key_name), stash_getint(reply, key_sid));
+		}
+		printf("\n\n");
+	}
+	stash_return_reply(reply);
+	
+	// add a sort critera to the query.   
+	stash_query_sort(query, key_name, 0);
+	stash_query_limit(query, limit);
+	
+	// now query the table to return the row we just created.
+	reply = stash_query_execute(stash, query);
+	if (reply->resultcode != STASH_ERR_OK) {
+		printf("Unable to query row, %d:'%s'.\n", reply->resultcode, stash_err_text(reply->resultcode));
+		sleep(1);
+	}
+	else {
+		
+		printf("\n\ndisplay - sorted on name (limit %d).\n", limit);
+		while (stash_nextrow(reply)) {
+			printf("row retrieved %d, code=%012d, name='%s', sid=%d\n", stash_rowid(reply), stash_getint(reply, key_code), stash_getstr(reply, key_name), stash_getint(reply, key_sid));
+		}
+		printf("\n\n");
+	}
+	stash_return_reply(reply);
+	
+	// add a sort critera to the query.   
+	stash_query_sort_clear(query);
+	stash_query_sort(query, key_code, 0);
+	
+	// now query the table to return the row we just created.
+	reply = stash_query_execute(stash, query);
+	if (reply->resultcode != STASH_ERR_OK) {
+		printf("Unable to query row, %d:'%s'.\n", reply->resultcode, stash_err_text(reply->resultcode));
+		sleep(1);
+	}
+	else {
+		
+		printf("\n\ndisplay - sorted on code (limit %d).\n", limit);
+		while (stash_nextrow(reply)) {
+			printf("row retrieved %d, code=%012d, name='%s', sid=%d\n", stash_rowid(reply), stash_getint(reply, key_code), stash_getstr(reply, key_name), stash_getint(reply, key_sid));
+		}
+		printf("\n\n");
+	}
+	stash_return_reply(reply);
+	
+	stash_cond_free(cond);
+	stash_query_free(query);
+}
+
+
 
 
 
@@ -713,6 +884,8 @@ int main(int argc, char **argv)
 // 				test_delete(stash, nsid, tid);
 // 				test_blob(stashl, nsid, tid);
 				test_sort(stash, nsid, tid);
+				test_sortquery(stash, nsid, tid);
+				test_sortquerylimit(stash, nsid, tid);
 			}
 		}
 	}
