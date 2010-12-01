@@ -14,7 +14,7 @@ STASHD_LIBS=-lexpbuf -lrisp -lrispbuf -levent
 STASH_COMMON_LIBS=-lstash -llinklist -lexpbufpool -lrispbuf -lrisp -levent
 LIBS=$(STASHD_LIBS) $(STASH_LIBS)
 
-OBJS=stashd.o stash-common.o
+OBJS=stashd.o stash-common.o event-compat.o
 
 
  
@@ -60,10 +60,13 @@ stash-create-table: stash-create-table.c
 
 # shared objects
 
+event-compat.o: event-compat.c event-compat.h
+	gcc -c -o $@ event-compat.c $(ARGS)
+
 stash-common.o: stash-common.c stash-common.h
 	gcc -c -o $@ stash-common.c $(ARGS)
 
-stashd.o: stashd.c stash-common.h
+stashd.o: stashd.c stash-common.h event-compat.h
 	gcc -c -o $@ stashd.c $(ARGS)
 
 

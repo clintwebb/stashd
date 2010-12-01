@@ -2,8 +2,12 @@
 #include "event-compat.h"
 
 #include <assert.h>
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+
+
 
 
 #if ( _EVENT_NUMERIC_VERSION < 0x02000000 )
@@ -114,35 +118,113 @@ int evutil_parse_sockaddr_port(const char *ip_as_string, struct sockaddr *out, i
 	return 0;
 }
 
-static void evconn_cb(int sfd, short flags, void *arg)
+// static void accept_conn_cb_old(evutil_socket_t fd, const short flags, void *ctx);
+
+
+static void evconn_cb(int ls_sfd, short flags, void *arg)
 {
-	assert(0);
+	struct evconnlistener *listener;
+	socklen_t addrlen;
+	struct sockaddr addr;
+	evutil_socket_t sfd;
 	
-	// check the arg, has a valid function pointer.
-	// accept the socket.
-	// cd
+	assert(ls_sfd >= 0);
+	assert(flags == EV_READ);
+	assert(arg);
+	
+	listener = arg;
+	assert(listener->handle >= 0);
+	assert(listener->handle == ls_sfd);
+	
+	addrlen = sizeof(addr);
+	if ((sfd = accept(listener->handle, (struct sockaddr *)&addr, &addrlen)) == -1) {
+		// somehow the accept failed... need to handle it gracefully.
+		assert(0);
+	}
+	else {
+		// 		void (*fn)(struct evconnlistener *, int, struct sockaddr *, int, void *ctx)
+		assert(listener->fn);
+		assert(listener->arg);
+		listener->fn(listener, sfd, &addr, addrlen, listener->arg);
+	}
 }
+
 
 
 // simulate the listener stuff from libevent2.
 // static void accept_conn_cb(struct evconnlistener *listener, evutil_socket_t fd, struct sockaddr *address, int socklen, void *ctx);
-struct evconnlistener * evconnlistener_new_bind( struct event_base *evbase, void (*fn)(struct evconnlistener *, int, struct sockaddr *, int), void *arg, int flags, int queues, struct sockaddr *sin, int slen )
+struct evconnlistener * evconnlistener_new_bind(struct event_base *evbase, void (*fn)(struct evconnlistener *, int, struct sockaddr *, int, void *), void *arg, int flags, int queues, struct sockaddr *sin, int slen )
 {
-	struct evconnlistener *listener;
-
+	struct evconnlistener *listener = NULL;
+	int sfd;
+	int error;
+	int sockflags =1;
+	struct linger ling = {0, 0};
+	
 	assert(evbase && fn);
-	assert(flags == LEV_OPT_CLOSE_ON_FREE|LEV_OPT_REUSEABLE);
+	assert(flags == (LEV_OPT_CLOSE_ON_FREE|LEV_OPT_REUSEABLE));
 	assert(sin && slen > 0);
 	
-	assert(0);
+	sfd = socket(AF_INET, SOCK_STREAM, 0);
 	
-	// create the socket.
-	// bind the socket.
-	// listen.
-	// set the READ event.
+	setsockopt(sfd, SOL_SOCKET, SO_REUSEADDR, (void *)&sockflags, sizeof(sockflags));
+	error = setsockopt(sfd, SOL_SOCKET, SO_KEEPALIVE, (void *)&sockflags, sizeof(sockflags));
+	assert(error == 0);
+	error = setsockopt(sfd, SOL_SOCKET, SO_LINGER, (void *)&ling, sizeof(ling));
+	assert(error == 0);
+	#ifdef TCP_NODELAY
+		error = setsockopt(sfd, IPPROTO_TCP, TCP_NODELAY, (void *)&sockflags, sizeof(sockflags));
+		assert(error == 0);
+	#endif
+		
+	if (bind(sfd, sin, slen) == -1) {
+		close(sfd);
+		sfd = -1;
+		assert(listener == NULL);
+	} 
+	else {
+		if (listen(sfd, 5) == -1) {
+			close(sfd);
+			sfd = -1;
+			assert(listener == NULL);
+		}
+		else {
+			// we've got a listener.
+			
+			listener = calloc(1, sizeof(*listener));
+			assert(listener);
+			
+			listener->handle = sfd;
+			listener->listen_event = event_new(evbase, sfd, EV_READ | EV_PERSIST, evconn_cb, (void *)listener);
+			event_add(listener->listen_event, NULL);
+			listener->fn = fn;
+			listener->arg = arg;
+		}
+	}
 	
 	return(listener);
 }
+
+
+void evconnlistener_free(struct evconnlistener * listener)
+{
+	assert(listener);
+	assert(listener->handle >= 0);
+	
+	if(listener->handle >= 0) {
+		assert(listener->listen_event);
+		event_del(listener->listen_event);
+		close(listener->handle);
+		listener->handle = -1;
+	}
+	
+	free(listener);	
+}
+
+
+
+
+
 
 
 

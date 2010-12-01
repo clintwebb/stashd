@@ -4,20 +4,11 @@
 //-----------------------------------------------------------------------------
 
 
+#include "event-compat.h"
+
 // includes
 #include "stash-common.h"
 #include <stash.h>
-
-// include libevent.  If we are using 1.x version of libevent, we need to do 
-// things slightly different than if we are using 2.x of libevent.
-#include <event.h>
-#if ( _EVENT_NUMERIC_VERSION < 0x02000000 )
-#define LIBEVENT_OLD_VER  
-#endif
-
-#if ( _EVENT_NUMERIC_VERSION >= 0x02000000 )
-#include <event2/listener.h>
-#endif
 
 
 #include <assert.h>
@@ -57,45 +48,6 @@
 
 #ifndef INVALID_HANDLE
 #define INVALID_HANDLE -1
-#endif
-
-
-
-
-// libevent compatability.   If libevent1.x is used, it doesnt have as much stuff as libevent2.0
-#ifdef LIBEVENT_OLD_VER  
-typedef int evutil_socket_t;
-
-// event_new is a 2.0 function that creates a new event, sets it and then returns the pointer to the new event structure.   1.4 does not have that function, so we wrap an event_set here instead.
-struct event * event_new(struct event_base *evbase, evutil_socket_t sfd, short flags, void (*fn)(int, short, void *), void *arg) {
-	struct event *ev;
-
-	assert(evbase && sfd >= 0 && flags != 0 && fn);
-	ev = calloc(1, sizeof(*ev));
-	assert(ev);
-	event_set(ev, sfd, flags, fn, arg);
-	event_base_set(evbase, ev);
-	
-	return(ev);
-}
-
-void event_free(struct event *ev)
-{
-	assert(ev);
-	event_del(ev);
-	free(ev);
-}
-
-struct event * evsignal_new(struct event_base *evbase, int sig, void (*fn)(int, short, void *), void *arg)
-{
-	struct event *ev;
-	ev = event_new(evbase, sig, EV_SIGNAL|EV_PERSIST, fn, arg);
-	assert(ev);
-	return(ev);
-}
-
-
-
 #endif
 
 
@@ -141,12 +93,7 @@ typedef struct {
 
 
 typedef struct {
-	#ifdef LIBEVENT_OLD_VER  
-		evutil_socket_t handle;
-		struct event listen_event;
-	#else
-		struct evconnlistener *listener;
-	#endif
+	struct evconnlistener *listener;
 	list_t *clients;
 	control_t *control;
 } server_t;
@@ -197,11 +144,7 @@ typedef struct {
 //-----------------------------------------------------------------------------
 // Pre-declare our handlers, because often they need to interact with functions
 // that are used to invoke them.
-#ifdef LIBEVENT_OLD_VER
-	static void accept_conn_cb_old(evutil_socket_t fd, const short flags, void *ctx);
-#else
-	static void accept_conn_cb(struct evconnlistener *listener, evutil_socket_t fd, struct sockaddr *address, int socklen, void *ctx);
-#endif
+static void accept_conn_cb(struct evconnlistener *listener, evutil_socket_t fd, struct sockaddr *address, int socklen, void *ctx);
 static void read_handler(int fd, short int flags, void *arg);
 static void write_handler(int fd, short int flags, void *arg);
 
@@ -274,9 +217,7 @@ static void server_init(server_t *server, control_t *control)
 	assert(server);
 	assert(control);
 
-#ifndef LIBEVENT_OLD_VER
 	server->listener = NULL;
-#endif
 	server->control = control;
 
 	assert(control->maxconns > 0);
@@ -285,161 +226,6 @@ static void server_init(server_t *server, control_t *control)
 	server->clients = ll_init(NULL);
 	assert(server->clients);
 }
-
-
- 
-
-#ifdef LIBEVENT_OLD_VER
-
-// parse the interface string which will look something like "127.0.0.1:3345", 
-// and given a pointer to a buffer, it will copy the address part to the 
-// buffer.
-static void parse_interface(char *full, char *portbuf, char *interface, int len)
-{
-	char *copy, *next, *argument;
-	int ll;
-	
-	assert(full && portbuf && interface && len > 0);
-	
-	copy = strdup(full);
-	assert(copy);
-	next = copy;
-	argument = strsep(&next, ":");
-	if (argument) {
-			
-		// remove spaces from the begining of the key.
-		while(*argument==' ') { argument++; }
-		while(*next==' ') { next++; }
-		assert(*argument && *next);		// the parts should not be empty.
-		
-		ll = strlen(argument);
-		assert(ll < len);
-		strcpy(interface, argument);
-		
-		ll = strlen(next);
-		assert(ll < len);
-		strcpy(portbuf, next);
-	}
-	
-	free(copy);
-}
-
-static int non_blocking(evutil_socket_t sfd)
-{
-	int flags;
-
-	assert(sfd >= 0);
-	
-	if ((flags = fcntl(sfd, F_GETFL, 0)) < 0 || fcntl(sfd, F_SETFL, flags | O_NONBLOCK) < 0) { 
-		return -1;
-	}
-	else {
-		return 0;
-	}
-}
-
-// function copied from memcached.  It creates a new socket handle and sets it to non-blocking.
-static int new_socket(struct addrinfo *ai) 
-{
-	int sfd;
-	int flags;
-	
-	if ((sfd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol)) == -1) {
-		return -1;
-	}
-	
-	if ((flags = fcntl(sfd, F_GETFL, 0)) < 0 || fcntl(sfd, F_SETFL, flags | O_NONBLOCK) < 0) { 
-		perror("setting O_NONBLOCK");
-		close(sfd);
-		return -1;
-	}
-	return sfd;
-}
-
-
-static void server_listen(server_t *server, char *interface)
-{
-	char ifbuff[32];
-	char portbuff[32];
-	int sfd;
-	struct addrinfo *ai;
-	struct addrinfo *next;
-	struct addrinfo hints = { .ai_flags = AI_PASSIVE, .ai_family = AF_UNSPEC, .ai_socktype = SOCK_STREAM };
-	int error;
-	int flags =1;
-	struct linger ling = {0, 0};
-	int success = 0;
-	
-	assert(server && interface);
-	
-	// first parse out the interface so that we have address and port.
-	parse_interface(interface, portbuff, ifbuff, 32);
-	printf("listening on %s:%s\n", ifbuff, portbuff);
-
-	assert(ifbuff[0] && portbuff[0]);
-	
-	error= getaddrinfo(ifbuff, portbuff, &hints, &ai);
-	assert(error == 0);
-	
-	
-	// keep looping on the results until we listen on one of them.
-	for (next= ai; next && success == 0; next= next->ai_next) {
-		
-		if ((sfd = new_socket(next)) == -1) {
-			/* getaddrinfo can return "junk" addresses,
-			 * we make sure at least one works before erroring.
-			 */
-			continue;
-		}
-		
-		setsockopt(sfd, SOL_SOCKET, SO_REUSEADDR, (void *)&flags, sizeof(flags));
-		error = setsockopt(sfd, SOL_SOCKET, SO_KEEPALIVE, (void *)&flags, sizeof(flags));
-		assert(error == 0);
-		error = setsockopt(sfd, SOL_SOCKET, SO_LINGER, (void *)&ling, sizeof(ling));
-		assert(error == 0);
-		#ifdef TCP_NODELAY
-			error = setsockopt(sfd, IPPROTO_TCP, TCP_NODELAY, (void *)&flags, sizeof(flags));
-			assert(error == 0);
-		#endif
-		
-		if (bind(sfd, next->ai_addr, next->ai_addrlen) == -1) {
-			if (errno != EADDRINUSE) {
-				perror("bind()");
-				close(sfd);
-				freeaddrinfo(ai);
-				return;
-			}
-			close(sfd);
-			continue;
-		} else {
-			success ++;
-			if (listen(sfd, 5) == -1) {
-				perror("listen()");
-				close(sfd);
-				freeaddrinfo(ai);
-				return;
-			}
-			else {
-				// we've got a listener.
-				server->handle = sfd;
-			}
-		}
-
-		
-
-		assert(server->control);
-		assert(server->control->evbase);
-
-		event_set(&server->listen_event, sfd, EV_READ | EV_PERSIST, accept_conn_cb_old, (void *)server);
-		event_base_set(server->control->evbase, &server->listen_event);
-		event_add(&server->listen_event, NULL);
-	}
-	
-	freeaddrinfo(ai);
-}
-
-#else
-/// using libevent2.x or higher, which makes it easier.
 
 
 //-----------------------------------------------------------------------------
@@ -478,8 +264,6 @@ static void server_listen(server_t *server, char *interface)
 		assert(server->listener);
 	}	
 }
-#endif 
-// different functionality depending on the version of libevent.
 
 
 
@@ -597,47 +381,6 @@ static void client_init ( client_t *client, server_t *server, evutil_socket_t ha
 }
 
 
-#ifdef LIBEVENT_OLD_VER
-//-----------------------------------------------------------------------------
-// accept an http connection.  Create the client object, and then attach the
-// file handle to it.
-static void accept_conn_cb_old( evutil_socket_t listen_socket, const short flags, void *ctx)
-{
-	client_t *client;
-	server_t *server = (server_t *) ctx;
-	socklen_t addrlen;
-	struct sockaddr addr;
-	evutil_socket_t sfd;
-	
-	assert(listen_socket > 0);
-	assert(flags == EV_READ);
-	assert(ctx);
-	assert(server);
-	
-	addrlen = sizeof(addr);
-	if ((sfd = accept(listen_socket, (struct sockaddr *)&addr, &addrlen)) == -1) {
-		// somehow the accept failed... need to handle it gracefully.
-		assert(0);
-	}
-	else {
-		// set non-blocking
-		if (non_blocking(sfd) != 0) {
-			// non-blocking failed... 
-			assert(0);
-		}
-		else {
-			printf("accepted client connection: socket=%d\n", sfd);
-			
-			// create client object.
-			// TODO: We should be pulling these client objects out of a mempool.
-			assert(sizeof(client_t) == sizeof(*client));
-			client = calloc(1, sizeof(*client));
-			assert(client);
-			client_init(client, server, sfd, &addr, addrlen);
-		}
-	}
-}
-#else
 //-----------------------------------------------------------------------------
 // accept an http connection.  Create the client object, and then attach the
 // file handle to it.
@@ -663,7 +406,6 @@ static void accept_conn_cb(
 	assert(client);
 	client_init(client, server, fd, address, socklen);
 }
-#endif
 
 
 //-----------------------------------------------------------------------------
@@ -752,27 +494,15 @@ static void client_shutdown(client_t *client)
 static void server_shutdown(server_t *server)
 {
 	client_t *client;
-	int rr;
 	
 	assert(server);
 	assert(server->control);
 
 	// need to close the listener socket.
-	#ifdef LIBEVENT_OLD_VER
-	if(server->handle >= 0) {
-		printf("stopping server event.\n");
-		rr = event_del(&server->listen_event);
-		assert(rr == 0);
-		rr = close(server->handle);
-		assert(rr == 0);
-		server->handle = INVALID_HANDLE;
-	}
-	#else
 	if (server->listener) {
 		evconnlistener_free(server->listener);
 		server->listener = NULL;
 	}
-	#endif
 
 	assert(server->clients);
 	ll_start(server->clients);
@@ -2980,10 +2710,11 @@ int main(int argc, char **argv)
 	}
 	
 	// create our event base which will be the pivot point for pretty much everything.
+#if ( _EVENT_NUMERIC_VERSION >= 0x02000000 )
 	assert(control);
-	#ifndef LIBEVENT_OLD_VER
-		assert(event_get_version_number() == LIBEVENT_VERSION_NUMBER);
-	#endif
+	assert(event_get_version_number() == LIBEVENT_VERSION_NUMBER);
+#endif
+	
 	control->evbase = event_base_new();
 	assert(control->evbase);
 
@@ -3052,7 +2783,7 @@ int main(int argc, char **argv)
 
 	// if we are using libevent2.0 or higher, then we can add an evbase to the storage engine so that it can set timers.
 	// older libevents have not been coded for...
-#ifndef LIBEVENT_OLD_VER
+#if ( _EVENT_NUMERIC_VERSION >= 0x02000000 )
 	assert(control);
 	assert(control->storage);
 	assert(control->evbase);
