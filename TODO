@@ -2,7 +2,7 @@ stash
 tasks to do
 
 
- *  server-side sorting. [sorting]
+ *  File splitting (command line option, defaults).
 
  *  remove control structure, and instead use global variables.  There is no point at all in using the control structure.
 
@@ -33,7 +33,11 @@ tasks to do
  *  manpage: stash-create
  *  manpage: stash-setpassword
 
+ *  Investigate whether a REST (http) interface is feasible.  Ideally it could return a JSON structure.
 
+ *  Push to slave
 
+ *  Pull to slave
 
+ *  stash backup instance.
 
