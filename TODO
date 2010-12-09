@@ -2,9 +2,13 @@ stash
 tasks to do
 
 
- *  File splitting (command line option, defaults).
-
  *  remove control structure, and instead use global variables.  There is no point at all in using the control structure.
+
+ *  File splitting 
+	* command line option
+	* defaults
+	* manpage
+
 
  *  when deleting a table or a namespace, need to go through each user and check the rights list and remove all rights that point to the table or namespace we are deleting.
 

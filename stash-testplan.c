@@ -877,12 +877,12 @@ int main(int argc, char **argv)
 			// run through the tests.
 			tid = test_createtable(stash, newtable, nsid);
 			if (tid > 0) {
-// 				test_insert(stash, nsid, tid);
+				test_insert(stash, nsid, tid);
 // 				test_expiry(stash, nsid, tid);
-// 				test_auto(stash, nsid, tid);
-// 				test_set(stash, nsid, tid);
-// 				test_delete(stash, nsid, tid);
-// 				test_blob(stashl, nsid, tid);
+				test_auto(stash, nsid, tid);
+				test_set(stash, nsid, tid);
+				test_delete(stash, nsid, tid);
+				test_blob(stash, nsid, tid);
 				test_sort(stash, nsid, tid);
 				test_sortquery(stash, nsid, tid);
 				test_sortquerylimit(stash, nsid, tid);

@@ -50,52 +50,65 @@
 #define INVALID_HANDLE -1
 #endif
 
+//-----------------------------------------------------------------------------
+// Global Variables.    
+// If we ever add threads then we need to be careful when accessing these 
+// global variables.
+
+// event base for listening on the sockets, and timeout events.
+struct event_base *_evbase = NULL;
+
+// risp object to process a RISP stream.  This can be from the network or from 
+// the disk.   THe stream protocol should be compatible even though they would 
+// be handled differently.
+risp_t *_risp = NULL;
+risp_t *_risp_req = NULL;
+risp_t *_risp_data = NULL;
+risp_t *_risp_attr = NULL;
+risp_t *_risp_sort = NULL;
+
+// linked list of listening sockets. 
+list_t *_servers = NULL;		// server_t
+
+// generic read buffer for reading from the socket or from the file.  It 
+// should always be empty, and anything left after processing should be put in 
+// a pending buffer.
+expbuf_t *_readbuf = NULL;
+
+// general reply buffer.   The contents would have been generated for the 
+// client, but this one can be used by all of them to wrap the reply values 
+// inside a STASH_CMD_REPLY.
+expbuf_t *_replybuf = NULL;
+
+// number of connections that we are currently listening for activity from.
+int _conncount = 0;
+
+// startup settings.
+const char *_interfaces = "127.0.0.1:13600";
+int _maxconns = 1024;
+int _verbose = 0;
+int _daemonize = 0;
+const char *_storepath = NULL;
+const char *_username = NULL;
+const char *_pid_file = NULL;
+
+// signal catchers that are used to clean up, and store final data before 
+// shutting down.
+struct event *_sigint_event = NULL;
+struct event *_sighup_event = NULL;
+
+// the common storage system that interacts with the datafile and what is 
+// stored in memory.
+storage_t *_storage = NULL;
 
 
-typedef struct {
-	// event base for listening on the sockets, and timeout events.
-	struct event_base *evbase;
 
-	// risp object to process a RISP stream.  This can be from the network or from the disk.   THe stream protocol should be compatible even though they would be handled differently.
-	risp_t *risp;
-	risp_t *risp_req;
-	risp_t *risp_data;
-	risp_t *risp_attr;
-	risp_t *risp_sort;
-	
-	// linked list of listening sockets.
-	list_t *servers;
-
-	// generic read buffer for reading from the socket or from the file.  It should always be empty, and anything left after processing should be put in a pending buffer.
-	expbuf_t *readbuf;
-	
-	// general reply buffer.   THe contents would have been generated for the client, but this one can be used by all of them to wrap the reply values inside a STASH_CMD_REPLY.
-	expbuf_t *replybuf;
-
-	// number of connections that we are currently listening for activity from.
-	int conncount;
-	
-	// startup settings.
-	const char *interfaces;
-	int maxconns;
-	int verbose;
-	int daemonize;
-	const char *storepath;
-	const char *username;
-	const char *pid_file;
-
-	struct event *sigint_event;
-	struct event *sighup_event;
-
-	storage_t *storage;
-	
-} control_t;
-
+//-----------------------------------------------------------------------------
+// common structures.
 
 typedef struct {
 	struct evconnlistener *listener;
 	list_t *clients;
-	control_t *control;
 } server_t;
 
 
@@ -149,79 +162,19 @@ static void read_handler(int fd, short int flags, void *arg);
 static void write_handler(int fd, short int flags, void *arg);
 
 
-//-----------------------------------------------------------------------------
-// Create and init our controller object.   The  control object will have
-// everything in it that is needed to run this server.  It is in this object
-// because we need to pass a pointer to the handler that will be doing the work.
-static void control_init(control_t *control)
-{
-	assert(control != NULL);
 
-	control->evbase = NULL;
-	control->sigint_event = NULL;
-	control->sighup_event = NULL;
-	control->conncount = 0;
-	control->interfaces = NULL;
-	control->maxconns = 1024;
-	control->risp = NULL;
-	control->risp_req = NULL;
-	control->risp_data = NULL;
-	control->risp_attr = NULL;
-	control->risp_sort = NULL;
-	control->verbose = 0;
-	control->daemonize = 0;
-	control->storepath = NULL;
-	control->username = NULL;
-	control->pid_file = NULL;
-	
-	control->readbuf = expbuf_init(NULL, DEFAULT_BUFSIZE);
-	control->replybuf = expbuf_init(NULL, DEFAULT_BUFSIZE);
-	
-	control->storage = NULL;
-}
-
-static void control_cleanup(control_t *control)
-{
-	assert(control != NULL);
-
-	assert(control->readbuf);
-	control->readbuf = expbuf_free(control->readbuf);
-	assert(control->readbuf == NULL);
-	
-	assert(control->replybuf);
-	control->replybuf = expbuf_free(control->replybuf);
-	assert(control->replybuf == NULL);
-
-	control->interfaces = NULL;
-	control->storepath = NULL;
-	control->username = NULL;
-	control->pid_file = NULL;
-	
-	assert(control->risp == NULL);
-	assert(control->risp_req == NULL);
-	assert(control->risp_data == NULL);
-	assert(control->risp_sort == NULL);
-	assert(control->risp_attr == NULL);
-	assert(control->conncount == 0);
-	assert(control->sigint_event == NULL);
-	assert(control->sighup_event == NULL);
-	assert(control->evbase == NULL);
-	assert(control->storage == NULL);
-}
 
 
 //-----------------------------------------------------------------------------
 // Initialise the server object.
-static void server_init(server_t *server, control_t *control)
+static void server_init(server_t *server)
 {
 	assert(server);
-	assert(control);
 
 	server->listener = NULL;
-	server->control = control;
 
-	assert(control->maxconns > 0);
-	assert(control->conncount == 0);
+	assert(_maxconns > 0);
+	assert(_conncount == 0);
 
 	server->clients = ll_init(NULL);
 	assert(server->clients);
@@ -249,11 +202,10 @@ static void server_listen(server_t *server, char *interface)
 	else {
 		
 		assert(server->listener == NULL);
-		assert(server->control);
-		assert(server->control->evbase);
+		assert(_evbase);
 		
 		server->listener = evconnlistener_new_bind(
-								server->control->evbase,
+								_evbase,
 								accept_conn_cb,
 								server,
 								LEV_OPT_CLOSE_ON_FREE|LEV_OPT_REUSEABLE,
@@ -267,30 +219,22 @@ static void server_listen(server_t *server, char *interface)
 
 
 
-static void init_servers(control_t *control)
+static void init_servers(void)
 {
 	server_t *server;
 	char *copy;
 	char *next;
 	char *argument;
-	const char *interfaces = "127.0.0.1:13600";
 	
-	assert(control);
+	assert(_interfaces);
+	assert(_servers == NULL);
 	
-	if (control->interfaces) {
-		interfaces = control->interfaces;
-	}
-	
-	assert(interfaces);
-	assert(control->servers == NULL);
-	
-	
-	control->servers = ll_init(control->servers);
-	assert(control->servers);
+	_servers = ll_init(_servers);
+	assert(_servers);
 
 	// make a copy of the supplied string, because we will be splitting it into
 	// its key/value pairs. We dont want to mangle the string that was supplied.
-	copy = strdup(interfaces);
+	copy = strdup(_interfaces);
 	assert(copy);
 
 	next = copy;
@@ -303,10 +247,10 @@ static void init_servers(control_t *control)
 			
 			if (strlen(argument) > 0) {
 				server = malloc(sizeof(*server));
-				server_init(server, control);
-				ll_push_head(control->servers, server);
+				server_init(server);
+				ll_push_head(_servers, server);
 		
-				if (control->verbose) printf("listen: %s\n", argument);
+				if (_verbose) printf("listen: %s\n", argument);
 				
 				server_listen(server, argument);
 			}
@@ -315,11 +259,6 @@ static void init_servers(control_t *control)
 	
 	free(copy);
 }
-
-
-
-
-
 
 
 
@@ -338,7 +277,7 @@ static void client_init ( client_t *client, server_t *server, evutil_socket_t ha
 	assert(handle > 0);
 	client->handle = handle;
 	
-	if (server->control->verbose) printf("New client - handle=%d\n", handle);
+	if (_verbose) printf("New client - handle=%d\n", handle);
 	
 	client->read_event = NULL;
 	client->write_event = NULL;
@@ -363,11 +302,10 @@ static void client_init ( client_t *client, server_t *server, evutil_socket_t ha
 	client->raw_attrlist = NULL;
 	
 	// assign fd to client object.
-	assert(server->control);
-	assert(server->control->evbase);
+	assert(_evbase);
 	assert(client->handle > 0);
 	client->read_event = event_new(
-		server->control->evbase,
+		_evbase,
 		client->handle,
 		EV_READ|EV_PERSIST,
 		read_handler,
@@ -415,8 +353,7 @@ static void client_free(client_t *client)
 	assert(client);
 	
 	assert(client->server);
-	assert(client->server->control);
-	if (client->server->control->verbose >= 2) printf("client_free: handle=%d\n", client->handle);
+	if (_verbose >= 2) printf("client_free: handle=%d\n", client->handle);
 	
 	assert(client->raw_attrlist == NULL);
 	
@@ -496,7 +433,6 @@ static void server_shutdown(server_t *server)
 	client_t *client;
 	
 	assert(server);
-	assert(server->control);
 
 	// need to close the listener socket.
 	if (server->listener) {
@@ -527,26 +463,22 @@ static void server_free(server_t *server)
 	assert(ll_count(server->clients) == 0);
 	server->clients = ll_free(server->clients);
 	assert(server->clients == NULL);
-	
-	assert(server->control);
-	server->control = NULL;
 }
 
 
-static void cleanup_servers(control_t *control)
+static void cleanup_servers(void)
 {
 	server_t *server;
 	
-	assert(control);
-	assert(control->servers);
+	assert(_servers);
 	
-	while ((server = ll_pop_head(control->servers))) {
+	while ((server = ll_pop_head(_servers))) {
 		server_free(server);
 		free(server);
 	}
 	
-	control->servers = ll_free(control->servers);
-	assert(control->servers == NULL);
+	_servers = ll_free(_servers);
+	assert(_servers == NULL);
 }
 
 
@@ -555,30 +487,29 @@ static void cleanup_servers(control_t *control)
 static void sigint_handler(evutil_socket_t fd, short what, void *arg)
 {
 	server_t *server;
-	control_t *control = (control_t *) arg;
 
 	// need to initiate an RQ shutdown.
-	assert(control);
+	assert(arg == NULL);
 	
 	printf("SIGINT received.\n\n");
 	
 	// need to send a message to each node telling them that we are shutting down.
-	assert(control->servers);
-	ll_start(control->servers);
-	while ((server = ll_next(control->servers))) {
+	assert(_servers);
+	ll_start(_servers);
+	while ((server = ll_next(_servers))) {
 		printf("shutting down server.\n");
 		server_shutdown(server);
 	}
-	ll_finish(control->servers);
+	ll_finish(_servers);
 	
 	// delete the signal events.
-	assert(control->sigint_event);
-	event_free(control->sigint_event);
-	control->sigint_event = NULL;
+	assert(_sigint_event);
+	event_free(_sigint_event);
+	_sigint_event = NULL;
 
-	assert(control->sighup_event == NULL);
-//	event_free(control->sighup_event);
-//	control->sighup_event = NULL;
+	assert(_sighup_event == NULL);
+//	event_free(_sighup_event);
+//	_sighup_event = NULL;
 	
 	printf("SIGINT complete\n");
 }
@@ -591,9 +522,7 @@ static void sigint_handler(evutil_socket_t fd, short what, void *arg)
 // possible.
 static void sighup_handler(evutil_socket_t fd, short what, void *arg)
 {
-//  	control_t *control = (control_t *) arg;
-
-	assert(arg);
+	assert(arg == NULL);
 
 	// clear out all cached objects.
 	assert(0);
@@ -691,7 +620,6 @@ static void cmdRequest(client_t *client, const risp_length_t length, const risp_
 {
 	risp_length_t processed;
 	int cnt;
-	control_t *control;
 	
 	assert(client && length >= 0 && data);
 
@@ -699,19 +627,15 @@ static void cmdRequest(client_t *client, const risp_length_t length, const risp_
 	assert(BUF_LENGTH(client->replybuf) == 0);
 	client->failcode = STASH_ERR_OK;
 	
-	assert(client->server);
-	assert(client->server->control);
-	control = client->server->control;
-	
-	assert(control->replybuf);
-	assert(BUF_LENGTH(control->replybuf) == 0);
+	assert(_replybuf);
+	assert(BUF_LENGTH(_replybuf) == 0);
 	
 	assert(client->raw_attrlist == NULL);
 	
 	// take the data and put it through the 'request' risp parser.
-	assert(control->risp_req);
-	risp_clear_all(control->risp_req);
-	processed = risp_process(control->risp_req, client, length, data);
+	assert(_risp_req);
+	risp_clear_all(_risp_req);
+	processed = risp_process(_risp_req, client, length, data);
 	assert(processed == length);
 
 	if (client->raw_attrlist) {
@@ -724,8 +648,8 @@ static void cmdRequest(client_t *client, const risp_length_t length, const risp_
 	
 	// check the risp structure for unprocessed messages.  There shouldn't be any.
 	for (cnt=0; cnt<256; cnt++) {
-		if (control->risp_req->commands[cnt].handler == NULL) {
-			if (control->risp_req->commands[cnt].set) {
+		if (_risp_req->commands[cnt].handler == NULL) {
+			if (_risp_req->commands[cnt].set) {
 				printf("cmdRequest: Unexpected operation: %d\n", cnt);
 			}
 		}
@@ -735,40 +659,40 @@ static void cmdRequest(client_t *client, const risp_length_t length, const risp_
 	assert(client->replybuf);
 	if (client->failcode == STASH_ERR_OK) {
 		// add the replybuf to the outpbuf 
-		assert(BUF_LENGTH(control->replybuf) == 0);
+		assert(BUF_LENGTH(_replybuf) == 0);
 		
 		rispbuf_addInt(client->replybuf, STASH_CMD_REQUEST_ID, client->req_id);
-		rispbuf_addBuffer(control->replybuf, STASH_CMD_REPLY, client->replybuf);
+		rispbuf_addBuffer(_replybuf, STASH_CMD_REPLY, client->replybuf);
 	}
 	else {
 		// we have a failure... 
 		assert(BUF_LENGTH(client->replybuf) == 0);
-		assert(BUF_LENGTH(control->replybuf) == 0);
+		assert(BUF_LENGTH(_replybuf) == 0);
 		
 		rispbuf_addInt(client->replybuf, STASH_CMD_REQUEST_ID, client->req_id);
 		rispbuf_addInt(client->replybuf, STASH_CMD_FAILCODE, client->failcode);
-		rispbuf_addBuffer(control->replybuf, STASH_CMD_FAILED, client->replybuf);
+		rispbuf_addBuffer(_replybuf, STASH_CMD_FAILED, client->replybuf);
 	}
 
 	client->req_id = 0;
 	expbuf_clear(client->replybuf);
 	assert(client->outbuffer);
-	expbuf_add(client->outbuffer, BUF_DATA(control->replybuf), BUF_LENGTH(control->replybuf));
-	expbuf_clear(control->replybuf);
+	expbuf_add(client->outbuffer, BUF_DATA(_replybuf), BUF_LENGTH(_replybuf));
+	expbuf_clear(_replybuf);
 	
 	// if there isn't a write event set, then we need to set one.
 	assert(client->outbuffer);
 	assert(BUF_LENGTH(client->outbuffer) > 0);
 	if (client->write_event == NULL) {
-		assert(control->evbase);
+		assert(_evbase);
 		assert(client->handle >= 0);
-		client->write_event = event_new( control->evbase, client->handle, EV_WRITE | EV_PERSIST, write_handler, (void *)client); assert(client->write_event);
+		client->write_event = event_new( _evbase, client->handle, EV_WRITE | EV_PERSIST, write_handler, (void *)client); assert(client->write_event);
 		assert(client->write_event);
 		event_add(client->write_event, NULL);
 	}
 	
 	assert(BUF_LENGTH(client->replybuf) == 0);
-	assert(BUF_LENGTH(control->replybuf) == 0);
+	assert(BUF_LENGTH(_replybuf) == 0);
 }
 
 
@@ -789,19 +713,17 @@ static risp_t * procRispData(client_t *client, const risp_length_t length, const
 {
 	risp_length_t processed;
 	
-	assert(client->server);
-	assert(client->server->control);
-	assert(client->server->control->risp_data);
+	assert(_risp_data);
 	
 	// make sure the client 'attribute' data is cleared.
 // 	assert(client->raw_attrlist);
 // 	assert(ll_count(client->raw_attrlist) == 0);
 	
-	risp_clear_all(client->server->control->risp_data);
-	processed = risp_process(client->server->control->risp_data, client, length, data);
+	risp_clear_all(_risp_data);
+	processed = risp_process(_risp_data, client, length, data);
 	assert(processed == length);
 	
-	return(client->server->control->risp_data);
+	return(_risp_data);
 }
 
 
@@ -832,10 +754,8 @@ static void cmdLogin(client_t *client, const risp_length_t length, const risp_da
 	assert(client->replybuf);
 	assert(BUF_LENGTH(client->replybuf) == 0);
 	
-	assert(client->server);
-	assert(client->server->control);
-	assert(client->server->control->storage);
-	user = storage_getuser(client->server->control->storage, NULL_USER_ID, username);
+	assert(_storage);
+	user = storage_getuser(_storage, NULL_USER_ID, username);
 	
 	if (user == NULL) {
 		// we dont have this username in our system.
@@ -905,16 +825,12 @@ static void cmdCreateUser(client_t *client, const risp_length_t length, const ri
 		assert(client->replybuf);
 		assert(BUF_LENGTH(client->replybuf) == 0);
 		
-		assert(client->server);
-		assert(client->server->control);
-		assert(client->server->control->storage);
-		user = storage_getuser(client->server->control->storage, NULL_USER_ID, username);
-		
+		user = storage_getuser(_storage, NULL_USER_ID, username);
 		if (user == NULL) {
 			// we dont have this username in our system, so we can create it.
 			assert(client->user);
 			assert(client->user->uid > 0);
-			user = storage_create_username(client->server->control->storage, client->user->uid, username);
+			user = storage_create_username(_storage, client->user->uid, username);
 			assert(user);
 			assert(user->uid > 0);
 			
@@ -974,12 +890,8 @@ static void cmdSetPassword(client_t *client, const risp_length_t length, const r
 	
 	assert(client->replybuf);
 	assert(BUF_LENGTH(client->replybuf) == 0);
-		
-	assert(client->server);
-	assert(client->server->control);
-	assert(client->server->control->storage);
-	user = storage_getuser(client->server->control->storage, uid, username);
-		
+
+	user = storage_getuser(_storage, uid, username);
 	if (user == NULL) {
 		// we do not have this username... 
 		assert(client->user);
@@ -996,7 +908,7 @@ static void cmdSetPassword(client_t *client, const risp_length_t length, const r
 		
 		// check the rights.
 		if (client->user->uid == user->uid || storage_check_rights(client->user, NULL, NULL, STASH_RIGHT_ADDUSER)) {
-			storage_set_password(client->server->control->storage, client->user->uid, user->uid, password);
+			storage_set_password(_storage, client->user->uid, user->uid, password);
 			client->failcode = STASH_ERR_OK;
 		}
 		else {
@@ -1032,11 +944,7 @@ static void cmdGetID(client_t *client, const risp_length_t length, const risp_da
 	assert(BUF_LENGTH(client->replybuf) == 0);
 	
 	if (risp_isset(rdata, STASH_CMD_USERNAME)) {
-		assert(client->server);
-		assert(client->server->control);
-		assert(client->server->control->storage);
-		user = storage_getuser(client->server->control->storage, 0, risp_getstring(rdata, STASH_CMD_USERNAME));
-		
+		user = storage_getuser(_storage, 0, risp_getstring(rdata, STASH_CMD_USERNAME));	
 		if (user == NULL) {
 			// namespace doesnt exist.
 			assert(client->user);
@@ -1058,11 +966,7 @@ static void cmdGetID(client_t *client, const risp_length_t length, const risp_da
 		}
 	}
 	else if (risp_isset(rdata, STASH_CMD_NAMESPACE)) {
-		assert(client->server);
-		assert(client->server->control);
-		assert(client->server->control->storage);
-		ns = storage_getnamespace(client->server->control->storage, 0, risp_getstring(rdata, STASH_CMD_NAMESPACE));
-		
+		ns = storage_getnamespace(_storage, 0, risp_getstring(rdata, STASH_CMD_NAMESPACE));
 		if (ns == NULL) {
 			// namespace doesnt exist.
 			assert(client->user);
@@ -1087,11 +991,8 @@ static void cmdGetID(client_t *client, const risp_length_t length, const risp_da
 		assert(client->replybuf);
 		assert(BUF_LENGTH(client->replybuf) == 0);
 		
-		assert(client->server);
-		assert(client->server->control);
-		assert(client->server->control->storage);
 		assert(risp_isset(rdata, STASH_CMD_NAMESPACE_ID));
-		ns = storage_getnamespace(client->server->control->storage, risp_getvalue(rdata, STASH_CMD_NAMESPACE_ID), NULL);
+		ns = storage_getnamespace(_storage, risp_getvalue(rdata, STASH_CMD_NAMESPACE_ID), NULL);
 		
 		if (ns == NULL) {
 			// namespace doesnt exist.
@@ -1106,11 +1007,7 @@ static void cmdGetID(client_t *client, const risp_length_t length, const risp_da
 			assert(ns->id > 0);
 
 			if (risp_isset(rdata, STASH_CMD_TABLE)) {
-				assert(client->server);
-				assert(client->server->control);
-				assert(client->server->control->storage);
-				table = storage_gettable(client->server->control->storage, ns, 0, risp_getstring(rdata, STASH_CMD_TABLE));
-				
+				table = storage_gettable(_storage, ns, 0, risp_getstring(rdata, STASH_CMD_TABLE));
 				if (table == NULL) {
 					// table doesnt exist.
 					assert(client->user);
@@ -1134,7 +1031,7 @@ static void cmdGetID(client_t *client, const risp_length_t length, const risp_da
 			else {
 			
 				assert(risp_isset(rdata, STASH_CMD_TABLE_ID));
-				table = storage_gettable(client->server->control->storage, ns, risp_getvalue(rdata, STASH_CMD_TABLE_ID), NULL);
+				table = storage_gettable(_storage, ns, risp_getvalue(rdata, STASH_CMD_TABLE_ID), NULL);
 				if (table == NULL) {
 					assert(0);
 				}
@@ -1151,7 +1048,7 @@ static void cmdGetID(client_t *client, const risp_length_t length, const risp_da
 								assert(client->user);
 								
 								if (storage_check_rights(client->user, ns, table, STASH_RIGHT_CREATE)) {
-									key = storage_create_key(client->server->control->storage, client->user, table, risp_getstring(rdata, STASH_CMD_KEY));
+									key = storage_create_key(_storage, client->user, table, risp_getstring(rdata, STASH_CMD_KEY));
 									assert(key);
 								}
 							}
@@ -1199,11 +1096,7 @@ static void cmdCreateTable(client_t *client, const risp_length_t length, const r
 	nsid = risp_getvalue(rdata, STASH_CMD_NAMESPACE_ID);
 	assert(nsid > 0);
 
-	assert(client->server);
-	assert(client->server->control);
-	assert(client->server->control->storage);
-	ns = storage_getnamespace(client->server->control->storage, nsid, NULL);
-	
+	ns = storage_getnamespace(_storage, nsid, NULL);
 	if (ns == NULL) {
 		// we dont have this namespace.
 		assert(client->replybuf);
@@ -1238,18 +1131,18 @@ static void cmdCreateTable(client_t *client, const risp_length_t length, const r
 
 	
 			// check first that the table name is not already in use within this namespace.
-			table = storage_gettable(client->server->control->storage, ns, 0, tablename);
+			table = storage_gettable(_storage, ns, 0, tablename);
 			if (table == NULL) {
 				// the table wasn't found, so we should be able to create it.
 				assert(client->user);
 				assert(client->user->uid > 0);
-				table = storage_create_table(client->server->control->storage, client->user, ns, tablename, optmap);
+				table = storage_create_table(_storage, client->user, ns, tablename, optmap);
 				assert(table);
 				assert(table->tid > 0);
 					
 				client->failcode = STASH_ERR_OK;
 				
-				if (client->server->control->verbose) {
+				if (_verbose) {
 					assert(ns->name);
 					printf("Table '%s' created in namespace '%s'.\n", tablename, ns->name);
 				}
@@ -1279,22 +1172,16 @@ static void cmdGrant(client_t *client, const risp_length_t length, const risp_da
 	namespace_t *ns = NULL;
 	table_t *table = NULL;
 	unsigned short optmap;
-	storage_t *storage;
 	short valid;
 	
 	assert(client && length > 0 && data);
-	
-	assert(client->server);
-	assert(client->server->control);
-	assert(client->server->control->storage);
-	storage = client->server->control->storage;
 	
 	// expand the data
 	rdata = procRispData(client, length, data);
 	assert(rdata);
 	
 	if (risp_isset(rdata, STASH_CMD_USER_ID)) {
-		user = storage_getuser(storage, risp_getvalue(rdata, STASH_CMD_USER_ID), NULL);
+		user = storage_getuser(_storage, risp_getvalue(rdata, STASH_CMD_USER_ID), NULL);
 		assert(user);
 	}
 	else {
@@ -1303,12 +1190,12 @@ static void cmdGrant(client_t *client, const risp_length_t length, const risp_da
 	}
 	
 	if (risp_isset(rdata, STASH_CMD_NAMESPACE_ID)) {
-		ns = storage_getnamespace(storage, risp_getvalue(rdata, STASH_CMD_NAMESPACE_ID), NULL);
+		ns = storage_getnamespace(_storage, risp_getvalue(rdata, STASH_CMD_NAMESPACE_ID), NULL);
 		assert(ns);
 	}
 	
 	if (risp_isset(rdata, STASH_CMD_TABLE_ID)) {
-		table = storage_gettable(storage, ns, risp_getvalue(rdata, STASH_CMD_TABLE_ID), NULL);
+		table = storage_gettable(_storage, ns, risp_getvalue(rdata, STASH_CMD_TABLE_ID), NULL);
 		assert(table);
 	}
 
@@ -1364,7 +1251,7 @@ static void cmdGrant(client_t *client, const risp_length_t length, const risp_da
 		client->failcode = STASH_ERR_INSUFFICIENTRIGHTS;
 	}
 	else {
-		storage_grant(storage, client->user->uid, user, ns, table, optmap);
+		storage_grant(_storage, client->user->uid, user, ns, table, optmap);
 		client->failcode = STASH_ERR_OK;
 	}
 }
@@ -1400,25 +1287,18 @@ static void cmdAttribute(client_t *client, const risp_length_t length, const ris
 	raw_attr_t *raw;
 	risp_length_t dlen;
 	risp_data_t *ddata;
-	risp_t *risp_attr = NULL;
-	
 	
 	assert(client && length > 0 && data);
 	
-	// initialse a new risp object, because we will need to get the values out of the stream.
-	assert(client->server);
-	assert(client->server->control);
-	assert(client->server->control->risp_attr);
-	risp_attr = client->server->control->risp_attr;
-	
 	// process out the values in the risp stream.
-	risp_clear_all(risp_attr);
-	processed = risp_process(risp_attr, NULL, length, data);
+	assert(_risp_attr);
+	risp_clear_all(_risp_attr);
+	processed = risp_process(_risp_attr, NULL, length, data);
 	assert(processed == length);
 	
 	// we should have these entries.
-	assert(risp_isset(risp_attr, STASH_CMD_KEY_ID));
-	assert(risp_isset(risp_attr, STASH_CMD_VALUE));
+	assert(risp_isset(_risp_attr, STASH_CMD_KEY_ID));
+	assert(risp_isset(_risp_attr, STASH_CMD_VALUE));
 	
 	// create a new raw object to hold the data.
 	raw = calloc(1, sizeof(*raw));
@@ -1426,22 +1306,22 @@ static void cmdAttribute(client_t *client, const risp_length_t length, const ris
 	assert(raw->expires == 0);
 
 	// get the keyid.
-	raw->keyid = risp_getvalue(risp_attr, STASH_CMD_KEY_ID);
+	raw->keyid = risp_getvalue(_risp_attr, STASH_CMD_KEY_ID);
 	assert(raw->keyid > 0);
 	
 	// parse out the value component.  The value object is complicated because it can contain a lot of data.  Values can contain lists and hashmaps which also need to be stored in it.
-	assert(risp_isset(risp_attr, STASH_CMD_VALUE));
-	ddata = risp_getdata(risp_attr, STASH_CMD_VALUE);
-	dlen = risp_getlength(risp_attr, STASH_CMD_VALUE);
+	assert(risp_isset(_risp_attr, STASH_CMD_VALUE));
+	ddata = risp_getdata(_risp_attr, STASH_CMD_VALUE);
+	dlen = risp_getlength(_risp_attr, STASH_CMD_VALUE);
 	assert(ddata);
 	assert(dlen > 0);
 	raw->value = stash_parse_value(ddata, dlen);
 	assert(raw->value);
 
 	// if we have an expiry
-	if (risp_isset(risp_attr, STASH_CMD_EXPIRES)) {
+	if (risp_isset(_risp_attr, STASH_CMD_EXPIRES)) {
 		// then we need to set the expiry time on the attribute object.
-		raw->expires = risp_getvalue(risp_attr, STASH_CMD_EXPIRES);
+		raw->expires = risp_getvalue(_risp_attr, STASH_CMD_EXPIRES);
 	}
 	
 	// add the value to the attrlist.
@@ -1455,7 +1335,6 @@ static void cmdSet(client_t *client, const risp_length_t length, const risp_data
 	risp_t      *rdata;
 	namespace_t *ns;
 	table_t     *table;
-	storage_t   *storage;
 	row_t       *row;
 	name_t      *name;
 	raw_attr_t  *rawattr;	// attribute received from the client.
@@ -1489,13 +1368,8 @@ static void cmdSet(client_t *client, const risp_length_t length, const risp_data
 	}
 	
 	// grab the pointer of the storage object for easier use.
-	assert(client->server);
-	assert(client->server->control);
-	assert(client->server->control->storage);
-	storage = client->server->control->storage;
-
 	assert(risp_isset(rdata, STASH_CMD_NAMESPACE_ID));
- 	ns = storage_getnamespace(storage, risp_getvalue(rdata, STASH_CMD_NAMESPACE_ID), NULL);
+ 	ns = storage_getnamespace(_storage, risp_getvalue(rdata, STASH_CMD_NAMESPACE_ID), NULL);
 	
 	if (ns == NULL) {
 		// we dont have this namespace.
@@ -1505,7 +1379,7 @@ static void cmdSet(client_t *client, const risp_length_t length, const risp_data
 
 	assert(ns);
 	assert(risp_isset(rdata, STASH_CMD_TABLE_ID));
-	table = storage_gettable(storage, ns, risp_getvalue(rdata, STASH_CMD_TABLE_ID), NULL);
+	table = storage_gettable(_storage, ns, risp_getvalue(rdata, STASH_CMD_TABLE_ID), NULL);
 
 	if (table == NULL) {
 		// the table doesnt exist.
@@ -1523,7 +1397,7 @@ static void cmdSet(client_t *client, const risp_length_t length, const risp_data
 
 	// if we are given a rowID, then we need to modify an existing record.
 	if (risp_isset(rdata, STASH_CMD_ROW_ID)) {
-		row = storage_getrow(storage, table, risp_getvalue(rdata, STASH_CMD_ROW_ID));
+		row = storage_getrow(_storage, table, risp_getvalue(rdata, STASH_CMD_ROW_ID));
 		assert(row);
 	}
 	else {
@@ -1556,7 +1430,7 @@ static void cmdSet(client_t *client, const risp_length_t length, const risp_data
 
 				// need to create a new name.
 				assert(risp_isset(rdata, STASH_CMD_NAME));
-				name = storage_create_name(storage, client->user, table, risp_getstring(rdata, STASH_CMD_NAME), STASH_NAMEOPT_TRANSIENT);
+				name = storage_create_name(_storage, client->user, table, risp_getstring(rdata, STASH_CMD_NAME), STASH_NAMEOPT_TRANSIENT);
 				assert(name);
 			}
 			
@@ -1584,7 +1458,7 @@ static void cmdSet(client_t *client, const risp_length_t length, const risp_data
 			
 			// create new row with the specified name object.
 			if (row == NULL) {
-				row = storage_create_row(storage, client->user, table, name, expires);
+				row = storage_create_row(_storage, client->user, table, name, expires);
 				assert(row);
 			}
 			
@@ -1648,7 +1522,7 @@ static void cmdSet(client_t *client, const risp_length_t length, const risp_data
 				autoval = 0;
 			}
 			
-			attr = storage_setattr(storage, client->user, row, key, rawattr->value, rawattr->expires);
+			attr = storage_setattr(_storage, client->user, row, key, rawattr->value, rawattr->expires);
 			assert(attr);
 			
 			if (autoval == 1) {
@@ -1692,7 +1566,7 @@ static void cmdSet(client_t *client, const risp_length_t length, const risp_data
 	assert((client->failcode == STASH_ERR_OK && BUF_LENGTH(client->replybuf) > 0) || (client->failcode != STASH_ERR_OK && BUF_LENGTH(client->replybuf) == 0));
 	
 	
-	if (client->server->control->verbose) {
+	if (_verbose) {
 		assert(ns->name && table->name);
 		printf("SET to '%s:%s'resulted in %d.\n", ns->name, table->name, client->failcode);
 	}
@@ -1702,7 +1576,6 @@ static void cmdSet(client_t *client, const risp_length_t length, const risp_data
 static void cmdSetExpiry(client_t *client, const risp_length_t length, const risp_data_t *data)
 {
 	risp_t      *rdata;
-	storage_t   *storage;
 	namespace_t *ns;
 	table_t     *table;
 	skey_t      *key;
@@ -1718,13 +1591,8 @@ static void cmdSetExpiry(client_t *client, const risp_length_t length, const ris
 	assert(rdata);
 	
 	// grab the pointer of the storage object for easier use.
-	assert(client->server);
-	assert(client->server->control);
-	assert(client->server->control->storage);
-	storage = client->server->control->storage;
-	
 	assert(risp_isset(rdata, STASH_CMD_NAMESPACE_ID));
-	ns = storage_getnamespace(storage, risp_getvalue(rdata, STASH_CMD_NAMESPACE_ID), NULL);
+	ns = storage_getnamespace(_storage, risp_getvalue(rdata, STASH_CMD_NAMESPACE_ID), NULL);
 	if (ns == NULL) {
 		// we dont have this namespace.
 		client->failcode = STASH_ERR_NSNOTEXIST;
@@ -1733,7 +1601,7 @@ static void cmdSetExpiry(client_t *client, const risp_length_t length, const ris
 	
 	assert(ns);
 	assert(risp_isset(rdata, STASH_CMD_TABLE_ID));
-	table = storage_gettable(storage, ns, risp_getvalue(rdata, STASH_CMD_TABLE_ID), NULL);
+	table = storage_gettable(_storage, ns, risp_getvalue(rdata, STASH_CMD_TABLE_ID), NULL);
 	if (table == NULL) {
 		// the table doesnt exist.
 		client->failcode = STASH_ERR_TABLENOTEXIST;
@@ -1750,7 +1618,7 @@ static void cmdSetExpiry(client_t *client, const risp_length_t length, const ris
 	
 	// at a minimum, we should be given a rowID
 	assert(risp_isset(rdata, STASH_CMD_ROW_ID));
-	row = storage_getrow(storage, table, risp_getvalue(rdata, STASH_CMD_ROW_ID));
+	row = storage_getrow(_storage, table, risp_getvalue(rdata, STASH_CMD_ROW_ID));
 	assert(row);
 	
 	// if we were given a key, then we need to get the key object.
@@ -1792,7 +1660,7 @@ static void cmdSetExpiry(client_t *client, const risp_length_t length, const ris
 	assert(client->user);
 	assert(client->user->uid);
 	assert(risp_isset(rdata, STASH_CMD_EXPIRES));
-	storage_set_expiry(storage, client->user->uid, row, attr, risp_getvalue(rdata, STASH_CMD_EXPIRES));
+	storage_set_expiry(_storage, client->user->uid, row, attr, risp_getvalue(rdata, STASH_CMD_EXPIRES));
 
 	assert(client->failcode == STASH_ERR_OK || (client->failcode != STASH_ERR_OK && BUF_LENGTH(client->replybuf) == 0));
 }
@@ -1801,7 +1669,6 @@ static void cmdSetExpiry(client_t *client, const risp_length_t length, const ris
 static void cmdDelete(client_t *client, const risp_length_t length, const risp_data_t *data)
 {
 	risp_t      *rdata;
-	storage_t   *storage;
 	namespace_t *ns;
 	table_t     *table;
 	skey_t      *key;
@@ -1818,13 +1685,9 @@ static void cmdDelete(client_t *client, const risp_length_t length, const risp_d
 	assert(rdata);
 	
 	// grab the pointer of the storage object for easier use.
-	assert(client->server);
-	assert(client->server->control);
-	assert(client->server->control->storage);
-	storage = client->server->control->storage;
-	
+	assert(_storage);
 	assert(risp_isset(rdata, STASH_CMD_NAMESPACE_ID));
-	ns = storage_getnamespace(storage, risp_getvalue(rdata, STASH_CMD_NAMESPACE_ID), NULL);
+	ns = storage_getnamespace(_storage, risp_getvalue(rdata, STASH_CMD_NAMESPACE_ID), NULL);
 	if (ns == NULL) {
 		// we dont have this namespace.
 		client->failcode = STASH_ERR_NSNOTEXIST;
@@ -1833,7 +1696,7 @@ static void cmdDelete(client_t *client, const risp_length_t length, const risp_d
 	
 	assert(ns);
 	assert(risp_isset(rdata, STASH_CMD_TABLE_ID));
-	table = storage_gettable(storage, ns, risp_getvalue(rdata, STASH_CMD_TABLE_ID), NULL);
+	table = storage_gettable(_storage, ns, risp_getvalue(rdata, STASH_CMD_TABLE_ID), NULL);
 	if (table == NULL) {
 		// the table doesnt exist.
 		client->failcode = STASH_ERR_TABLENOTEXIST;
@@ -1850,7 +1713,7 @@ static void cmdDelete(client_t *client, const risp_length_t length, const risp_d
 	
 	// at a minimum, we should be given a rowID
 	assert(risp_isset(rdata, STASH_CMD_ROW_ID));
-	row = storage_getrow(storage, table, risp_getvalue(rdata, STASH_CMD_ROW_ID));
+	row = storage_getrow(_storage, table, risp_getvalue(rdata, STASH_CMD_ROW_ID));
 	assert(row);
 	
 	// if we were given a key, then we need to get the key object.
@@ -1877,7 +1740,7 @@ static void cmdDelete(client_t *client, const risp_length_t length, const risp_d
 	assert(client);
 	assert(client->user);
 	assert(client->user->uid > 0);
-	storage_delete(storage, client->user, row, key);
+	storage_delete(_storage, client->user, row, key);
 	
 	assert(client->failcode == STASH_ERR_OK || (client->failcode != STASH_ERR_OK && BUF_LENGTH(client->replybuf) == 0));
 }
@@ -2258,8 +2121,7 @@ static void cmdQuery(client_t *client, const risp_length_t length, const risp_da
 	assert(client && length && data);
 	assert(client->user);
 	assert(client->server);
-	assert(client->server->control);
-	assert(client->server->control->storage);
+	assert(_storage);
 	
 	// expand the data
 	rdata = procRispData(client, length, data);
@@ -2274,16 +2136,15 @@ static void cmdQuery(client_t *client, const risp_length_t length, const risp_da
 	if (risp_isset(rdata, STASH_CMD_SORT)) {
 		// we have sort criteria, so we need to pull it out and put it into a sortentry_t structure.
 
-		assert(client->server->control);
-		assert(client->server->control->risp_sort);
+		assert(_risp_sort);
 		assert(client->sortentry == NULL);
 		len = risp_getlength(rdata, STASH_CMD_SORT);
-		processed = risp_process(client->server->control->risp_sort, client, len, risp_getdata(rdata, STASH_CMD_SORT));
+		processed = risp_process(_risp_sort, client, len, risp_getdata(rdata, STASH_CMD_SORT));
 		assert(processed == len);
 	}
 	
 	assert(risp_isset(rdata, STASH_CMD_NAMESPACE_ID));
-	ns = storage_getnamespace(client->server->control->storage, risp_getvalue(rdata, STASH_CMD_NAMESPACE_ID), NULL);
+	ns = storage_getnamespace(_storage, risp_getvalue(rdata, STASH_CMD_NAMESPACE_ID), NULL);
 	if (ns == NULL) {
 		// namespace doesnt exist.
 		assert(client->user);
@@ -2297,7 +2158,7 @@ static void cmdQuery(client_t *client, const risp_length_t length, const risp_da
 		assert(ns->id > 0);
 		
 		assert(risp_isset(rdata, STASH_CMD_TABLE_ID));
-		table = storage_gettable(client->server->control->storage, ns, risp_getvalue(rdata, STASH_CMD_TABLE_ID), NULL);
+		table = storage_gettable(_storage, ns, risp_getvalue(rdata, STASH_CMD_TABLE_ID), NULL);
 		if (table == NULL) {
 			assert(0);
 		}
@@ -2337,7 +2198,7 @@ static void cmdQuery(client_t *client, const risp_length_t length, const risp_da
 				// Each pointer will point to a row.  We will use another 
 				// function to get the appropriate keys out of the rows, 
 				// and return them.
-				rows = storage_query(client->server->control->storage, table, condition);
+				rows = storage_query(_storage, table, condition);
 				assert(rows);
 				
 				assert(client->replybuf);
@@ -2454,8 +2315,6 @@ static void read_handler(int fd, short int flags, void *arg)
 {
 	client_t *client = (client_t *) arg;
 	int res;
-	control_t *control;
-	// 	int done;
 	risp_length_t processed;
 	expbuf_t *buf;
 	
@@ -2463,51 +2322,44 @@ static void read_handler(int fd, short int flags, void *arg)
 	assert(flags != 0);
 	assert(client);
 	assert(client->handle == fd);
-	
 	assert(client->server);
-	assert(client->server->control);
-	control = client->server->control;
-	
-	printf("received read event, about to recv data on socket:%d\n", fd);
 	
 	// read data from the socket.
-	assert(control->readbuf);
-	assert(BUF_LENGTH(control->readbuf) == 0 && BUF_MAX(control->readbuf) > 0 && BUF_DATA(control->readbuf) != NULL);
-	res = read(fd, BUF_DATA(control->readbuf), BUF_MAX(control->readbuf));
+	assert(_readbuf);
+	assert(BUF_LENGTH(_readbuf) == 0 && BUF_MAX(_readbuf) > 0 && BUF_DATA(_readbuf) != NULL);
+	res = read(fd, BUF_DATA(_readbuf), BUF_MAX(_readbuf));
 	if (res > 0) {
 		
-		printf("received %d bytes from socket:%d\n", res, fd);
-		
 		// got some data.
-		assert(res <= BUF_MAX(control->readbuf));
-		BUF_LENGTH(control->readbuf) = res;
+		assert(res <= BUF_MAX(_readbuf));
+		BUF_LENGTH(_readbuf) = res;
 		
 		// if we got the max of the buffer, then we should increase the size of the buffer.
-		if (res == BUF_MAX(control->readbuf)) {
-			expbuf_shrink(control->readbuf, DEFAULT_BUFSIZE);	// give the buffer some extra kb.
-			assert(BUF_MAX(control->readbuf) > BUF_LENGTH(control->readbuf));
+		if (res == BUF_MAX(_readbuf)) {
+			expbuf_shrink(_readbuf, DEFAULT_BUFSIZE);	// give the buffer some extra kb.
+			assert(BUF_MAX(_readbuf) > BUF_LENGTH(_readbuf));
 		}
 		
 		assert(client->pending);
 		if (BUF_LENGTH(client->pending) > 0) {
-			expbuf_add(client->pending, BUF_DATA(control->readbuf), BUF_LENGTH(control->readbuf));
-			expbuf_clear(control->readbuf);
+			expbuf_add(client->pending, BUF_DATA(_readbuf), BUF_LENGTH(_readbuf));
+			expbuf_clear(_readbuf);
 			buf = client->pending;
 		}
 		else {
-			buf = control->readbuf;
+			buf = _readbuf;
 		}
 		
 		// process the data received, and remove what was processed, from the buffer.
-		assert(control->risp);
-		processed = risp_process(control->risp, client, BUF_LENGTH(buf), BUF_DATA(buf));
+		assert(_risp);
+		processed = risp_process(_risp, client, BUF_LENGTH(buf), BUF_DATA(buf));
 		if (processed > 0) {
 			expbuf_purge(buf, processed);
 		}
 		
-		if (BUF_LENGTH(control->readbuf) > 0) {
-			expbuf_add(client->pending, BUF_DATA(control->readbuf), BUF_LENGTH(control->readbuf));
-			expbuf_clear(control->readbuf);
+		if (BUF_LENGTH(_readbuf) > 0) {
+			expbuf_add(client->pending, BUF_DATA(_readbuf), BUF_LENGTH(_readbuf));
+			expbuf_clear(_readbuf);
 		}
 	}
 	else {
@@ -2519,9 +2371,8 @@ static void read_handler(int fd, short int flags, void *arg)
 		client = NULL;
 	}
 	
-	assert(control);
-	assert(control->readbuf);
-	assert(BUF_LENGTH(control->readbuf) == 0);
+	assert(_readbuf);
+	assert(BUF_LENGTH(_readbuf) == 0);
 }
 
 
@@ -2546,11 +2397,10 @@ static void usage(void) {
 
 
 
-static void parse_params(control_t *control, int argc, char **argv)
+static void parse_params(int argc, char **argv)
 {
 	int c;
 	
-	assert(control);
 	assert(argc >= 0);
 	assert(argv);
 	
@@ -2559,42 +2409,41 @@ static void parse_params(control_t *control, int argc, char **argv)
 	while ((c = getopt(argc, argv, "c:hvd:u:P:l:b:")) != -1) {
 		switch (c) {
 			case 'c':
-				control->maxconns = atoi(optarg);
-				assert(control->maxconns > 0);
+				_maxconns = atoi(optarg);
+				assert(_maxconns > 0);
 				break;
 			case 'h':
 				usage();
 				exit(EXIT_SUCCESS);
 			case 'v':
-				control->verbose++;
+				_verbose++;
 				break;
 			case 'd':
-				assert(control->daemonize == 0);
-				control->daemonize = 1;
+				assert(_daemonize == 0);
+				_daemonize = 1;
 				break;
 			case 'b':
-				assert(control->storepath == NULL);
-				control->storepath = optarg;
-				assert(control->storepath != NULL);
-				assert(control->storepath[0] != '\0');
+				assert(_storepath == NULL);
+				_storepath = optarg;
+				assert(_storepath != NULL);
+				assert(_storepath[0] != '\0');
 				break;
 			case 'u':
-				assert(control->username == NULL);
-				control->username = optarg;
-				assert(control->username != NULL);
-				assert(control->username[0] != 0);
+				assert(_username == NULL);
+				_username = optarg;
+				assert(_username != NULL);
+				assert(_username[0] != 0);
 				break;
 			case 'P':
-				assert(control->pid_file == NULL);
-				control->pid_file = optarg;
-				assert(control->pid_file != NULL);
-				assert(control->pid_file[0] != 0);
+				assert(_pid_file == NULL);
+				_pid_file = optarg;
+				assert(_pid_file != NULL);
+				assert(_pid_file[0] != 0);
 				break;
 			case 'l':
-				assert(control->interfaces == NULL);
-				control->interfaces = strdup(optarg);
-				assert(control->interfaces != NULL);
-				assert(control->interfaces[0] != 0);
+				_interfaces = optarg;
+				assert(_interfaces != NULL);
+				assert(_interfaces[0] != 0);
 				break;
 				
 			default:
@@ -2684,112 +2533,98 @@ void daemonize(const char *username, const char *pidfile, const int noclose)
 // sockets and event loop.
 int main(int argc, char **argv) 
 {
-	control_t *control  = NULL;
 	struct timeval time_start, time_stop;
 
 ///============================================================================
 /// Initialization.
 ///============================================================================
 
-	// create the 'control' object that will be passed to all the handlers so
-	// that they have access to the information that they require.
-	control = malloc(sizeof(*control));
-	control_init(control);
-
-	parse_params(control, argc, argv);
+	parse_params(argc, argv);
 	
-	if (control->storepath == NULL) {
+	if (_storepath == NULL) {
 		fprintf(stderr, "stashd requires -b parameter.\n");
 		exit(1);
 	}
 	
 	// daemonize
-	if (control->daemonize) {
+	if (_daemonize) {
 		assert(0);	// not completed, apparently.
-// 		daemonize(control->username, control->pid_file, control->verbose);
+// 		daemonize(_username, _pid_file, _verbose);
 	}
 	
 	// create our event base which will be the pivot point for pretty much everything.
 #if ( _EVENT_NUMERIC_VERSION >= 0x02000000 )
-	assert(control);
 	assert(event_get_version_number() == LIBEVENT_VERSION_NUMBER);
 #endif
 	
-	control->evbase = event_base_new();
-	assert(control->evbase);
+	_evbase = event_base_new();
+	assert(_evbase);
 
 	// initialise signal handlers.
-	assert(control);
-	assert(control->evbase);
-	control->sigint_event = evsignal_new(control->evbase, SIGINT, sigint_handler, control);
-// 	control->sighup_event = evsignal_new(control->evbase, SIGHUP, sighup_handler, control);
-	assert(control->sigint_event);
-// 	assert(control->sighup_event);
-	event_add(control->sigint_event, NULL);
-// 	event_add(control->sighup_event, NULL);
+	assert(_evbase);
+	_sigint_event = evsignal_new(_evbase, SIGINT, sigint_handler, NULL);
+// 	_sighup_event = evsignal_new(_evbase, SIGHUP, sighup_handler, NULL);
+	assert(_sigint_event);
+// 	assert(_sighup_event);
+	event_add(_sigint_event, NULL);
+// 	event_add(_sighup_event, NULL);
 	
 	
 
-	assert(control);
-	assert(control->risp == NULL);
-	control->risp = risp_init(NULL);
-	assert(control->risp != NULL);
-	risp_add_command(control->risp, STASH_CMD_REQUEST,     &cmdRequest);
+	assert(_risp == NULL);
+	assert(_risp_req == NULL);
+	assert(_risp_data == NULL);
+	assert(_risp_sort == NULL);
+	assert(_risp_attr == NULL);
+	
+	_risp = risp_init(NULL);
+	risp_add_command(_risp, STASH_CMD_REQUEST,     &cmdRequest);
 
-	assert(control);
-	assert(control->risp_req == NULL);
-	control->risp_req = risp_init(NULL);
-	assert(control->risp_req != NULL);
-	risp_add_command(control->risp_req, STASH_CMD_REQUEST_ID,   &cmdRequestID);
-	risp_add_command(control->risp_req, STASH_CMD_LOGIN,        &cmdLogin);
-	risp_add_command(control->risp_req, STASH_CMD_CREATE_USER,  &cmdCreateUser);
-	risp_add_command(control->risp_req, STASH_CMD_SET_PASSWORD, &cmdSetPassword);
-	risp_add_command(control->risp_req, STASH_CMD_GETID,        &cmdGetID);
-	risp_add_command(control->risp_req, STASH_CMD_CREATE_TABLE, &cmdCreateTable);
-	risp_add_command(control->risp_req, STASH_CMD_SET,          &cmdSet);
-	risp_add_command(control->risp_req, STASH_CMD_SET_EXPIRY,   &cmdSetExpiry);
-	risp_add_command(control->risp_req, STASH_CMD_GRANT,        &cmdGrant);
-	risp_add_command(control->risp_req, STASH_CMD_QUERY,        &cmdQuery);
-	risp_add_command(control->risp_req, STASH_CMD_DELETE,       &cmdDelete);
+	_risp_req = risp_init(NULL);
+	risp_add_command(_risp_req, STASH_CMD_REQUEST_ID,   &cmdRequestID);
+	risp_add_command(_risp_req, STASH_CMD_LOGIN,        &cmdLogin);
+	risp_add_command(_risp_req, STASH_CMD_CREATE_USER,  &cmdCreateUser);
+	risp_add_command(_risp_req, STASH_CMD_SET_PASSWORD, &cmdSetPassword);
+	risp_add_command(_risp_req, STASH_CMD_GETID,        &cmdGetID);
+	risp_add_command(_risp_req, STASH_CMD_CREATE_TABLE, &cmdCreateTable);
+	risp_add_command(_risp_req, STASH_CMD_SET,          &cmdSet);
+	risp_add_command(_risp_req, STASH_CMD_SET_EXPIRY,   &cmdSetExpiry);
+	risp_add_command(_risp_req, STASH_CMD_GRANT,        &cmdGrant);
+	risp_add_command(_risp_req, STASH_CMD_QUERY,        &cmdQuery);
+	risp_add_command(_risp_req, STASH_CMD_DELETE,       &cmdDelete);
 	
-	assert(control);
-	assert(control->risp_data == NULL);
-	control->risp_data = risp_init(NULL);
-	assert(control->risp_data);
-	risp_add_command(control->risp_data, STASH_CMD_ATTRIBUTE,   &cmdAttribute);
+	_risp_data = risp_init(NULL);
+	risp_add_command(_risp_data, STASH_CMD_ATTRIBUTE,   &cmdAttribute);
 
-	assert(control);
-	assert(control->risp_sort == NULL);
-	control->risp_sort = risp_init(NULL);
-	assert(control->risp_sort);
-	risp_add_command(control->risp_sort, STASH_CMD_SORTENTRY,   &cmdSortEntry);
+	_risp_sort = risp_init(NULL);
+	risp_add_command(_risp_sort, STASH_CMD_SORTENTRY,   &cmdSortEntry);
 	
-	
-	assert(control->risp_attr == NULL);
-	control->risp_attr = risp_init(NULL);
-	assert(control->risp_attr);
-	
-	
+	_risp_attr = risp_init(NULL);
+
+	// create the initial read and reply buffers,.
+	assert(_readbuf == NULL && _replybuf == NULL);
+	_readbuf = expbuf_init(NULL, DEFAULT_BUFSIZE);
+	_replybuf = expbuf_init(NULL, DEFAULT_BUFSIZE);
+	assert(_readbuf && _replybuf);
 	
 	// load the data from the specified data directory. 
 	gettimeofday(&time_start, NULL);
-	control->storage = storage_init(NULL);
-	assert(control->storage);
-	assert(control->storepath);
-	storage_lock_master(control->storage, control->storepath);
-	storage_process(control->storage, control->storepath, KEEP_OPEN, LOAD_DATA);
+	_storage = storage_init(NULL);
+	assert(_storage);
+	assert(_storepath);
+	storage_lock_master(_storage, _storepath);
+	storage_process(_storage, _storepath, KEEP_OPEN, LOAD_DATA);
 	gettimeofday(&time_stop, NULL);
-	if (control->verbose > 0) { printf("Stored data loaded in %d seconds.\n", (int) (time_stop.tv_sec - time_start.tv_sec)); }
+	if (_verbose > 0) { printf("Stored data loaded in %d seconds.\n", (int) (time_stop.tv_sec - time_start.tv_sec)); }
 
 	// if we are using libevent2.0 or higher, then we can add an evbase to the storage engine so that it can set timers.
 	// older libevents have not been coded for...
-	assert(control);
-	assert(control->storage);
-	assert(control->evbase);
-	storage_set_evbase(control->storage, control->evbase);
+	assert(_storage);
+	assert(_evbase);
+	storage_set_evbase(_storage, _evbase);
 	
 	// initialise the servers that we listen on.
-	init_servers(control);
+	init_servers();
 	
 
 ///============================================================================
@@ -2800,69 +2635,84 @@ int main(int argc, char **argv)
 	// nothing more to do and the service has shutdown.  Therefore everything
 	// needs to be setup and running before this point.  Once inside the
 	// rq_process function, everything is initiated by the RQ event system.
-	assert(control);
-	if (control->verbose > 0) { printf("Starting main loop.\n"); }
-	assert(control->evbase);
-	event_base_dispatch(control->evbase);
+	if (_verbose > 0) { printf("Starting main loop.\n"); }
+	assert(_evbase);
+	event_base_dispatch(_evbase);
 
 ///============================================================================
 /// Shutdown
 ///============================================================================
 
-	assert(control);
-	if (control->verbose > 0) { printf("Freeing the event base.\n"); }
-	assert(control->evbase);
-	event_base_free(control->evbase);
-	control->evbase = NULL;
+	if (_verbose > 0) { printf("Freeing the event base.\n"); }
+	assert(_evbase);
+	event_base_free(_evbase);
+	_evbase = NULL;
 
 	// cleanup the servers objects.
-	if (control->verbose > 0) { printf("Cleaning up servers.\n"); }
-	cleanup_servers(control);
+	if (_verbose > 0) { printf("Cleaning up servers.\n"); }
+	cleanup_servers();
 
 	// make sure signal handlers have been cleared.
-	assert(control);
-	assert(control->sigint_event == NULL);
-	assert(control->sighup_event == NULL);
+	assert(_sigint_event == NULL);
+	assert(_sighup_event == NULL);
 
-	assert(control);
-	if (control->verbose > 0) { printf("Shutting down RISP.\n"); }
+	if (_verbose > 0) { printf("Shutting down RISP.\n"); }
 	
-	assert(control->risp);
-	control->risp = risp_shutdown(control->risp);
-	assert(control->risp == NULL);
+	assert(_risp);
+	_risp = risp_shutdown(_risp);
+	assert(_risp == NULL);
 	
-	assert(control->risp_req);
-	control->risp_req = risp_shutdown(control->risp_req);
-	assert(control->risp_req == NULL);
+	assert(_risp_req);
+	_risp_req = risp_shutdown(_risp_req);
+	assert(_risp_req == NULL);
 	
-	assert(control->risp_data);
-	control->risp_data = risp_shutdown(control->risp_data);
-	assert(control->risp_data == NULL);
+	assert(_risp_data);
+	_risp_data = risp_shutdown(_risp_data);
+	assert(_risp_data == NULL);
 
-	assert(control->risp_attr);
-	control->risp_attr = risp_shutdown(control->risp_attr);
-	assert(control->risp_attr == NULL);
+	assert(_risp_attr);
+	_risp_attr = risp_shutdown(_risp_attr);
+	assert(_risp_attr == NULL);
 	
-	assert(control->risp_sort);
-	control->risp_sort = risp_shutdown(control->risp_sort);
-	assert(control->risp_sort == NULL);
+	assert(_risp_sort);
+	_risp_sort = risp_shutdown(_risp_sort);
+	assert(_risp_sort == NULL);
 	
 	// cleanup the storage 
-	assert(control);
-	if (control->verbose > 0) { printf("Shutting down storage engine.\n"); }
-	assert(control->storage);
-	assert(control->storepath);
-	storage_unlock_master(control->storage, control->storepath);
-	storage_free(control->storage);
-	control->storage = NULL;		
+	if (_verbose > 0) { printf("Shutting down storage engine.\n"); }
+	assert(_storage && _storepath);
+	storage_unlock_master(_storage, _storepath);
+	storage_free(_storage);
+	_storage = NULL;		
 	
 	
 	// we are done, cleanup what is left in the control structure.
-	if (control->verbose > 0) { printf("Final cleanup.\n"); }
+	if (_verbose > 0) { printf("Final cleanup.\n"); }
 	
-	control_cleanup(control);
-	free(control);
-
+	assert(_readbuf);
+	_readbuf = expbuf_free(_readbuf);
+	assert(_readbuf == NULL);
+	
+	assert(_replybuf);
+	_replybuf = expbuf_free(_replybuf);
+	assert(_replybuf == NULL);
+	
+	_interfaces = NULL;
+	_storepath = NULL;
+	_username = NULL;
+	_pid_file = NULL;
+	
+	assert(_risp == NULL);
+	assert(_risp_req == NULL);
+	assert(_risp_data == NULL);
+	assert(_risp_sort == NULL);
+	assert(_risp_attr == NULL);
+	assert(_conncount == 0);
+	assert(_sigint_event == NULL);
+	assert(_sighup_event == NULL);
+	assert(_evbase == NULL);
+	assert(_storage == NULL);
+	
 	return 0;
 }
 
