@@ -14,7 +14,7 @@ STASHD_LIBS=-lexpbuf -lrisp -lrispbuf -levent
 STASH_COMMON_LIBS=-lstash -llinklist -lexpbufpool -lrispbuf -lrisp -levent
 LIBS=$(STASHD_LIBS) $(STASH_LIBS)
 
-OBJS=stashd.o stash-common.o event-compat.o
+OBJS=stash-common.o event-compat.o
 
 
  
@@ -25,29 +25,30 @@ H_linklist=/usr/include/linklist.h
 
 
 
-stashd: $(OBJS) stash-common.h
-	gcc -o $@ $(OBJS) $(LIBS) $(ARGS)
+stashd: stashd.c stash-common.h event-compat.h
+	gcc -o $@ stashd.c $(OBJS) $(LIBS) $(ARGS)
+
 
 stash-create: stash-create.c
 	gcc -o $@ stash-create.c -lexpbuf -lrispbuf $(ARGS)
 
-stash-dump: stash-dump.c stash-common.h stash-common.o
-	gcc -o $@ stash-dump.c stash-common.o $(STASH_COMMON_LIBS) -lexpbuf $(ARGS)
+stash-dump: stash-dump.c stash-common.h stash-common.o event-compat.o
+	gcc -o $@ stash-dump.c stash-common.o event-compat.o $(STASH_COMMON_LIBS) -lexpbuf $(ARGS)
 
-stash-adduser: stash-adduser.c stash-common.h stash-common.o
-	gcc -o $@ stash-adduser.c stash-common.o $(STASH_COMMON_LIBS) -lexpbuf $(ARGS)
+stash-adduser: stash-adduser.c stash-common.h stash-common.o event-compat.o
+	gcc -o $@ stash-adduser.c stash-common.o event-compat.o $(STASH_COMMON_LIBS) -lexpbuf $(ARGS)
 
-stash-setpassword: stash-setpassword.c stash-common.h stash-common.o
-	gcc -o $@ stash-setpassword.c stash-common.o $(STASH_COMMON_LIBS) -lexpbuf $(ARGS)
+stash-setpassword: stash-setpassword.c stash-common.h stash-common.o event-compat.o
+	gcc -o $@ stash-setpassword.c stash-common.o event-compat.o $(STASH_COMMON_LIBS) -lexpbuf $(ARGS)
 
-stash-testplan: stash-testplan.c stash-common.h stash-common.o
-	gcc -o $@ stash-testplan.c stash-common.o $(STASH_COMMON_LIBS) -lexpbuf $(ARGS)
+stash-testplan: stash-testplan.c stash-common.h stash-common.o event-compat.o
+	gcc -o $@ stash-testplan.c stash-common.o event-compat.o $(STASH_COMMON_LIBS) -lexpbuf $(ARGS)
 
-stash-grant: stash-grant.c stash-common.h stash-common.o
-	gcc -o $@ stash-grant.c stash-common.o $(STASH_COMMON_LIBS) -lexpbuf $(ARGS)
+stash-grant: stash-grant.c stash-common.h stash-common.o event-compat.o
+	gcc -o $@ stash-grant.c stash-common.o event-compat.o $(STASH_COMMON_LIBS) -lexpbuf $(ARGS)
 
-stash-create-namespace: stash-create-namespace.c stash-common.h stash-common.o
-	gcc -o $@ stash-create-namespace.c stash-common.o $(STASH_COMMON_LIBS) -lexpbuf -lrispbuf -lrisp -lstash $(ARGS)
+stash-create-namespace: stash-create-namespace.c stash-common.h stash-common.o event-compat.o
+	gcc -o $@ stash-create-namespace.c stash-common.o event-compat.o $(STASH_COMMON_LIBS) -lexpbuf -lrispbuf -lrisp -lstash $(ARGS)
 
 
 # network only tools
@@ -63,11 +64,8 @@ stash-create-table: stash-create-table.c
 event-compat.o: event-compat.c event-compat.h
 	gcc -c -o $@ event-compat.c $(ARGS)
 
-stash-common.o: stash-common.c stash-common.h
+stash-common.o: stash-common.c stash-common.h event-compat.h
 	gcc -c -o $@ stash-common.c $(ARGS)
-
-stashd.o: stashd.c stash-common.h event-compat.h
-	gcc -c -o $@ stashd.c $(ARGS)
 
 
 

@@ -2783,12 +2783,10 @@ int main(int argc, char **argv)
 
 	// if we are using libevent2.0 or higher, then we can add an evbase to the storage engine so that it can set timers.
 	// older libevents have not been coded for...
-#if ( _EVENT_NUMERIC_VERSION >= 0x02000000 )
 	assert(control);
 	assert(control->storage);
 	assert(control->evbase);
 	storage_set_evbase(control->storage, control->evbase);
-#endif
 	
 	// initialise the servers that we listen on.
 	init_servers(control);

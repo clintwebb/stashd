@@ -41,3 +41,8 @@ tasks to do
 
  *  stash backup instance.
 
+ *  Not very happy that all the command line tools that access the files directly, need to link in libevent and other things that really aren't needed.  THerefore, I think we need to split up stash-common even further, maybe into its own library.   Then the stash tools can be put in a seperate repository and kept seperate from the bare daemon.
+
+
+
+
