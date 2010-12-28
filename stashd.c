@@ -2406,7 +2406,7 @@ static void parse_params(int argc, char **argv)
 	
 	// process arguments
 	/// Need to check the options in here, there're possibly ones that we dont need.
-	while ((c = getopt(argc, argv, "c:hvd:u:P:l:b:")) != -1) {
+	while ((c = getopt(argc, argv, "c:hvdu:P:l:b:")) != -1) {
 		switch (c) {
 			case 'c':
 				_maxconns = atoi(optarg);
@@ -2424,19 +2424,19 @@ static void parse_params(int argc, char **argv)
 				break;
 			case 'b':
 				assert(_storepath == NULL);
-				_storepath = optarg;
+				_storepath = strdup(optarg);
 				assert(_storepath != NULL);
 				assert(_storepath[0] != '\0');
 				break;
 			case 'u':
 				assert(_username == NULL);
-				_username = optarg;
+				_username = strdup(optarg);
 				assert(_username != NULL);
 				assert(_username[0] != 0);
 				break;
 			case 'P':
 				assert(_pid_file == NULL);
-				_pid_file = optarg;
+				_pid_file = strdup(optarg);
 				assert(_pid_file != NULL);
 				assert(_pid_file[0] != 0);
 				break;
@@ -2462,22 +2462,20 @@ void daemonize(const char *username, const char *pidfile, const int noclose)
 	int fd;
 	FILE *fp;
 	
-	if (username != NULL) {
-		assert(username[0] != '\0');
-		if (getuid() == 0 || geteuid() == 0) {
-			if (username == 0 || *username == '\0') {
-				fprintf(stderr, "can't run as root without the -u switch\n");
-				exit(EXIT_FAILURE);
-			}
-			pw = getpwnam((const char *)username);
-			if (pw == NULL) {
-				fprintf(stderr, "can't find the user %s to switch to\n", username);
-				exit(EXIT_FAILURE);
-			}
-			if (setgid(pw->pw_gid) < 0 || setuid(pw->pw_uid) < 0) {
-				fprintf(stderr, "failed to assume identity of user %s\n", username);
-				exit(EXIT_FAILURE);
-			}
+	if (getuid() == 0 || geteuid() == 0) {
+		if (username == 0 || *username == '\0') {
+			fprintf(stderr, "can't run as root without the -u switch\n");
+			exit(EXIT_FAILURE);
+		}
+		assert(username);
+		pw = getpwnam((const char *)username);
+		if (pw == NULL) {
+			fprintf(stderr, "can't find the user %s to switch to\n", username);
+			exit(EXIT_FAILURE);
+		}
+		if (setgid(pw->pw_gid) < 0 || setuid(pw->pw_uid) < 0) {
+			fprintf(stderr, "failed to assume identity of user %s\n", username);
+			exit(EXIT_FAILURE);
 		}
 	}
 	
@@ -2524,6 +2522,8 @@ void daemonize(const char *username, const char *pidfile, const int noclose)
 			exit(EXIT_FAILURE);
 		}
 	}
+	
+	
 }
 
 
@@ -2548,8 +2548,8 @@ int main(int argc, char **argv)
 	
 	// daemonize
 	if (_daemonize) {
-		assert(0);	// not completed, apparently.
-// 		daemonize(_username, _pid_file, _verbose);
+// 		assert(0);	// not completed, apparently.
+		daemonize(_username, _pid_file, _verbose);
 	}
 	
 	// create our event base which will be the pivot point for pretty much everything.
@@ -2698,9 +2698,10 @@ int main(int argc, char **argv)
 	assert(_replybuf == NULL);
 	
 	_interfaces = NULL;
-	_storepath = NULL;
-	_username = NULL;
-	_pid_file = NULL;
+	
+	if (_storepath) { free(_storepath); _storepath = NULL; }
+	if (_username) { free(_username); _username = NULL; }
+	if (_pid_file) { free(_pid_file); _pid_file = NULL; }
 	
 	assert(_risp == NULL);
 	assert(_risp_req == NULL);
