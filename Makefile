@@ -25,7 +25,7 @@ H_linklist=/usr/include/linklist.h
 
 
 
-stashd: stashd.c stash-common.h event-compat.h
+stashd: stashd.c $(OBJS) stash-common.h event-compat.h
 	gcc -o $@ stashd.c $(OBJS) $(LIBS) $(ARGS)
 
 
