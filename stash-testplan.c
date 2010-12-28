@@ -59,14 +59,14 @@ static void usage(void) {
 }
 
 
-static stash_tableid_t test_createtable(stash_t *stash, const char *newtable, stash_nsid_t nsid)
+static stash_tableid_t test_createtable(stash_t *stash, const char *newtable)
 {
 	stash_result_t res;
 	stash_tableid_t tid;
 
-	assert(stash && nsid > 0);
+	assert(stash && newtable);
 	
-	res = stash_create_table(stash, nsid, newtable, 0, &tid);
+	res = stash_create_table(stash, newtable, 0, &tid);
 	if (res != STASH_ERR_OK) {
 		printf("Unable to create table '%s'.\n", newtable);
 		assert(tid == 0);
@@ -76,7 +76,7 @@ static stash_tableid_t test_createtable(stash_t *stash, const char *newtable, st
 		assert(tid > 0);
 		
 		// grant rights to the table.
-		res = stash_grant(stash, 0, nsid, tid, STASH_RIGHT_CREATE | STASH_RIGHT_SET | STASH_RIGHT_UPDATE | STASH_RIGHT_DELETE | STASH_RIGHT_QUERY);
+		res = stash_grant(stash, 0, tid, STASH_RIGHT_CREATE | STASH_RIGHT_SET | STASH_RIGHT_UPDATE | STASH_RIGHT_DELETE | STASH_RIGHT_QUERY);
 		if (res != STASH_ERR_OK) {
 			printf("Unable to set rights on table. %d:'%s'\n", res, stash_err_text(res));
 		}
@@ -89,7 +89,7 @@ static stash_tableid_t test_createtable(stash_t *stash, const char *newtable, st
 }
 
 
-static void test_insert(stash_t *stash, stash_nsid_t nsid, stash_tableid_t tid)
+static void test_insert(stash_t *stash, stash_tableid_t tid)
 {
 	stash_attrlist_t *alist;
 	int cnt;
@@ -99,25 +99,25 @@ static void test_insert(stash_t *stash, stash_nsid_t nsid, stash_tableid_t tid)
 	int tm_set, tm_query;
 	stash_cond_t *cond;
 	
-	assert(stash && nsid > 0 && tid > 0);
+	assert(stash && tid > 0);
 	
-	key_name  = stash_get_key_id(stash, nsid, tid, "name");
-	key_id    = stash_get_key_id(stash, nsid, tid, "id");
-	key_total = stash_get_key_id(stash, nsid, tid, "total");
+	key_name  = stash_get_key_id(stash, tid, "name");
+	key_id    = stash_get_key_id(stash, tid, "id");
+	key_total = stash_get_key_id(stash, tid, "total");
+
+	alist = stash_init_alist(stash);
+	assert(alist);
+
+	stash_set_attr(alist, key_name,  __value_str("fred"), 0);
+	stash_set_attr(alist, key_id,    __value_auto(), 0);
+	stash_set_attr(alist, key_total, __bind_int(&cnt), 0);
 	
 	gettimeofday(&tv, NULL);
 	tm_set = tv.tv_sec;
 	for (cnt=0; cnt < max_loop; cnt++) {
-		
-		alist = stash_init_alist(stash);
-		assert(alist);
-		
-		stash_set_attr(alist, key_name,  __value_str("fred"), 0);
-		stash_set_attr(alist, key_id,    __value_auto(), 0);
-		stash_set_attr(alist, key_total, __value_int(cnt), 0);
-		
+
 		// now we want to set a bunch of records.
-		reply = stash_create_row(stash, nsid, tid, NULL_NAMEID, "rowentry", alist, 0);
+		reply = stash_create_row(stash, tid, NULL_NAMEID, "rowentry", alist, 0);
 		assert(reply);
 		if (reply->resultcode != STASH_ERR_OK) {
 			printf("Unable to create row '%d', %d:'%s'.\n", cnt, reply->resultcode, stash_err_text(reply->resultcode));
@@ -127,17 +127,20 @@ static void test_insert(stash_t *stash, stash_nsid_t nsid, stash_tableid_t tid)
 // 			printf("row %d created.\n", cnt);
 // 		}
 		stash_return_reply(reply);
-		stash_free_alist(stash, alist);
 	}
 	gettimeofday(&tv, NULL);
 	printf("Time for Setting: %d\n", (int) (tv.tv_sec - tm_set));
+
+	stash_free_alist(stash, alist);
+	
 	
 	printf("created %d records.\n", max_loop);
 	
 	gettimeofday(&tv, NULL);
 	tm_query = tv.tv_sec;
+	
 	cond = __cond_name(0, "rowentry");
-	reply = stash_query(stash, nsid, tid, 0, cond);
+	reply = stash_query(stash, tid, 0, cond);
 	if (reply->resultcode != STASH_ERR_OK) {
 		printf("Unable to query row '%d', %d:'%s'.\n", cnt, reply->resultcode, stash_err_text(reply->resultcode));
 		sleep(1);
@@ -149,13 +152,14 @@ static void test_insert(stash_t *stash, stash_nsid_t nsid, stash_tableid_t tid)
 	}
 	stash_cond_free(cond);
 	stash_return_reply(reply);
+	
 	gettimeofday(&tv, NULL);
 	printf("Time for Query: %d\n", (int) (tv.tv_sec - tm_query));
 }
 
 
 
-static void test_expiry(stash_t *stash, stash_nsid_t nsid, stash_tableid_t tid)
+static void test_expiry(stash_t *stash, stash_tableid_t tid)
 {
 	stash_attrlist_t *alist;
 	stash_reply_t *reply;
@@ -164,13 +168,13 @@ static void test_expiry(stash_t *stash, stash_nsid_t nsid, stash_tableid_t tid)
 	int sec;
 	stash_cond_t *cond;
 	
-	assert(stash && nsid > 0 && tid > 0);
+	assert(stash && tid > 0);
 
 	printf("\n\nTesting expiry\n");
 	
-	key_name  = stash_get_key_id(stash, nsid, tid, "name");
-	key_code  = stash_get_key_id(stash, nsid, tid, "code");
-	key_tmp   = stash_get_key_id(stash, nsid, tid, "tmp");
+	key_name  = stash_get_key_id(stash, tid, "name");
+	key_code  = stash_get_key_id(stash, tid, "code");
+	key_tmp   = stash_get_key_id(stash, tid, "tmp");
 			
 	alist = stash_init_alist(stash);
 	assert(alist);
@@ -180,7 +184,7 @@ static void test_expiry(stash_t *stash, stash_nsid_t nsid, stash_tableid_t tid)
 	stash_set_attr(alist, key_tmp,  __value_str("balony"), 5);
 	
 	// now we want to set a bunch of records.
-	reply = stash_create_row(stash, nsid, tid, NULL_NAMEID, "rowentry", alist, 10);
+	reply = stash_create_row(stash, tid, NULL_NAMEID, "rowentry", alist, 10);
 	assert(reply);
 	if (reply->resultcode != STASH_ERR_OK) {
 		printf("Unable to create row, %d:'%s'.\n", reply->resultcode, stash_err_text(reply->resultcode));
@@ -195,7 +199,7 @@ static void test_expiry(stash_t *stash, stash_nsid_t nsid, stash_tableid_t tid)
 	cond = __cond_key_equals(key_code, __value_int(1024));
 	
 	for (sec=0; sec<20; sec++) {
-		reply = stash_query(stash, nsid, tid, 1, cond);
+		reply = stash_query(stash, tid, 1, cond);
 		if (reply->resultcode != STASH_ERR_OK) {
 			printf("Unable to query row, %d:'%s'.\n", reply->resultcode, stash_err_text(reply->resultcode));
 			sleep(1);
@@ -217,20 +221,20 @@ static void test_expiry(stash_t *stash, stash_nsid_t nsid, stash_tableid_t tid)
 
 
 
-static void test_auto(stash_t *stash, stash_nsid_t nsid, stash_tableid_t tid)
+static void test_auto(stash_t *stash, stash_tableid_t tid)
 {
 	stash_attrlist_t *alist;
 	stash_reply_t *reply;
 	stash_keyid_t key_name, key_code, key_sid;
 	int i;
 	
-	assert(stash && nsid > 0 && tid > 0);
+	assert(stash && tid > 0);
 	
 	printf("\n\nTesting auto incrementing values\n");
 	
-	key_name  = stash_get_key_id(stash, nsid, tid, "name");
-	key_code  = stash_get_key_id(stash, nsid, tid, "code");
-	key_sid   = stash_get_key_id(stash, nsid, tid, "sid");
+	key_name  = stash_get_key_id(stash, tid, "name");
+	key_code  = stash_get_key_id(stash, tid, "code");
+	key_sid   = stash_get_key_id(stash, tid, "sid");
 	
 	alist = stash_init_alist(stash);
 	assert(alist);
@@ -241,7 +245,7 @@ static void test_auto(stash_t *stash, stash_nsid_t nsid, stash_tableid_t tid)
 
 	for (i=0; i<5; i++) {
 		// now we want to set a bunch of records.
-		reply = stash_create_row(stash, nsid, tid, NULL_NAMEID, "autorow", alist, 10);
+		reply = stash_create_row(stash, tid, NULL_NAMEID, "autorow", alist, 10);
 		assert(reply);
 		if (reply->resultcode != STASH_ERR_OK) {
 			printf("Unable to create row, %d:'%s'.\n", reply->resultcode, stash_err_text(reply->resultcode));
@@ -263,7 +267,7 @@ static void test_auto(stash_t *stash, stash_nsid_t nsid, stash_tableid_t tid)
 
 
 
-static void test_set(stash_t *stash, stash_nsid_t nsid, stash_tableid_t tid)
+static void test_set(stash_t *stash, stash_tableid_t tid)
 {
 	stash_attrlist_t *alist;
 	stash_reply_t *reply;
@@ -272,13 +276,13 @@ static void test_set(stash_t *stash, stash_nsid_t nsid, stash_tableid_t tid)
 	stash_rowid_t rowid = 0;
 	stash_cond_t *cond;
 	
-	assert(stash && nsid > 0 && tid > 0);
+	assert(stash && tid > 0);
 	
 	printf("\n\nTesting multi-set\n");
 	
-	key_name  = stash_get_key_id(stash, nsid, tid, "name");
-	key_code  = stash_get_key_id(stash, nsid, tid, "code");
-	key_sid   = stash_get_key_id(stash, nsid, tid, "sid");
+	key_name  = stash_get_key_id(stash, tid, "name");
+	key_code  = stash_get_key_id(stash, tid, "code");
+	key_sid   = stash_get_key_id(stash, tid, "sid");
 	
 	
 	for (i=0; i<5; i++) {
@@ -291,7 +295,7 @@ static void test_set(stash_t *stash, stash_nsid_t nsid, stash_tableid_t tid)
 		stash_set_attr(alist, key_sid,  __value_auto(), 0);
 		
 		// now we want to set a bunch of records.
-		reply = stash_create_row(stash, nsid, tid, NULL_NAMEID, "multiset", alist, 0);
+		reply = stash_create_row(stash, tid, NULL_NAMEID, "multiset", alist, 0);
 		assert(reply);
 		if (reply->resultcode != STASH_ERR_OK) {
 			printf("Unable to create row, %d:'%s'.\n", reply->resultcode, stash_err_text(reply->resultcode));
@@ -313,7 +317,7 @@ static void test_set(stash_t *stash, stash_nsid_t nsid, stash_tableid_t tid)
 		
 		// now we want to set a bunch of records.
 		assert(rowid > 0);
-		reply = stash_set(stash, nsid, tid, rowid, alist);
+		reply = stash_set(stash, tid, rowid, alist);
 		assert(reply);
 		if (reply->resultcode != STASH_ERR_OK) {
 			printf("Unable to updated row, %d:'%s'.\n", reply->resultcode, stash_err_text(reply->resultcode));
@@ -330,7 +334,7 @@ static void test_set(stash_t *stash, stash_nsid_t nsid, stash_tableid_t tid)
 	
 	// now query the table to return the rows we just created.
 	cond = __cond_name(0, "multiset");
-	reply = stash_query(stash, nsid, tid, 0, cond);
+	reply = stash_query(stash, tid, 0, cond);
 	if (reply->resultcode != STASH_ERR_OK) {
 		printf("Unable to query row, %d:'%s'.\n", reply->resultcode, stash_err_text(reply->resultcode));
 		sleep(1);
@@ -346,7 +350,7 @@ static void test_set(stash_t *stash, stash_nsid_t nsid, stash_tableid_t tid)
 
 
 
-static void test_delete(stash_t *stash, stash_nsid_t nsid, stash_tableid_t tid)
+static void test_delete(stash_t *stash, stash_tableid_t tid)
 {
 	stash_attrlist_t *alist;
 	stash_reply_t *reply;
@@ -355,13 +359,13 @@ static void test_delete(stash_t *stash, stash_nsid_t nsid, stash_tableid_t tid)
 	stash_rowid_t rowid = 0;
 	stash_cond_t *cond;
 	
-	assert(stash && nsid > 0 && tid > 0);
+	assert(stash && tid > 0);
 	
 	printf("\n\nTesting delete\n");
 	
-	key_name  = stash_get_key_id(stash, nsid, tid, "name");
-	key_code  = stash_get_key_id(stash, nsid, tid, "code");
-	key_sid   = stash_get_key_id(stash, nsid, tid, "sid");
+	key_name  = stash_get_key_id(stash, tid, "name");
+	key_code  = stash_get_key_id(stash, tid, "code");
+	key_sid   = stash_get_key_id(stash, tid, "sid");
 	
 	
 	// set the initial attributes.
@@ -374,7 +378,7 @@ static void test_delete(stash_t *stash, stash_nsid_t nsid, stash_tableid_t tid)
 	
 	// now we want to set a record.
 	rowid = 0;
-	reply = stash_create_row(stash, nsid, tid, NULL_NAMEID, "delete", alist, 0);
+	reply = stash_create_row(stash, tid, NULL_NAMEID, "delete", alist, 0);
 	assert(reply);
 	if (reply->resultcode != STASH_ERR_OK) {
 		printf("Unable to create row, %d:'%s'.\n", reply->resultcode, stash_err_text(reply->resultcode));
@@ -390,7 +394,7 @@ static void test_delete(stash_t *stash, stash_nsid_t nsid, stash_tableid_t tid)
 	if (rowid > 0) {
 		
 		// now delete an attribute.
-		reply = stash_delete(stash, nsid, tid, rowid, key_code);
+		reply = stash_delete(stash, tid, rowid, key_code);
 		if (reply->resultcode != STASH_ERR_OK) {
 			printf("Unable to delete attr, %d:'%s'.\n", reply->resultcode, stash_err_text(reply->resultcode));
 			sleep(1);
@@ -402,7 +406,7 @@ static void test_delete(stash_t *stash, stash_nsid_t nsid, stash_tableid_t tid)
 
 		// now query the table to return the row we just created.
 		printf("query #1 after deleting attribute\n");
-		reply = stash_query(stash, nsid, tid, 0, cond);
+		reply = stash_query(stash, tid, 0, cond);
 		if (reply->resultcode != STASH_ERR_OK) {
 			printf("Unable to query row, %d:'%s'.\n", reply->resultcode, stash_err_text(reply->resultcode));
 			sleep(1);
@@ -415,7 +419,7 @@ static void test_delete(stash_t *stash, stash_nsid_t nsid, stash_tableid_t tid)
 		stash_return_reply(reply);
 		
 		// now delete the entire row.
-		reply = stash_delete(stash, nsid, tid, rowid, 0);
+		reply = stash_delete(stash, tid, rowid, 0);
 		if (reply->resultcode != STASH_ERR_OK) {
 			printf("Unable to delete row, %d:'%s'.\n", reply->resultcode, stash_err_text(reply->resultcode));
 			sleep(1);
@@ -424,7 +428,7 @@ static void test_delete(stash_t *stash, stash_nsid_t nsid, stash_tableid_t tid)
 
 		// now query the table to return the row we just created.
 		printf("query #2 after deleting row\n");
-		reply = stash_query(stash, nsid, tid, 0, cond);
+		reply = stash_query(stash, tid, 0, cond);
 		if (reply->resultcode != STASH_ERR_OK) {
 			printf("Unable to query row, %d:'%s'.\n", reply->resultcode, stash_err_text(reply->resultcode));
 			sleep(1);
@@ -444,7 +448,7 @@ static void test_delete(stash_t *stash, stash_nsid_t nsid, stash_tableid_t tid)
 
 
 
-static void test_blob(stash_t *stash, stash_nsid_t nsid, stash_tableid_t tid)
+static void test_blob(stash_t *stash, stash_tableid_t tid)
 {
 	stash_attrlist_t *alist;
 	stash_reply_t *reply;
@@ -456,13 +460,13 @@ static void test_blob(stash_t *stash, stash_nsid_t nsid, stash_tableid_t tid)
 	struct timeval tv;
 	int tm_set, tm_query;
 	
-	assert(stash && nsid > 0 && tid > 0);
+	assert(stash && tid > 0);
 	
 	printf("\n\nTesting blob\n");
 	
-	key_name  = stash_get_key_id(stash, nsid, tid, "name");
-	key_sid   = stash_get_key_id(stash, nsid, tid, "sid");
-	key_data  = stash_get_key_id(stash, nsid, tid, "data");
+	key_name  = stash_get_key_id(stash, tid, "name");
+	key_sid   = stash_get_key_id(stash, tid, "sid");
+	key_data  = stash_get_key_id(stash, tid, "data");
 	
 	// init the data that we want to store.
 	data = malloc(1024*64);
@@ -486,7 +490,7 @@ static void test_blob(stash_t *stash, stash_nsid_t nsid, stash_tableid_t tid)
 		stash_set_attr(alist, key_data, __value_blob(data, (1024*64)), 0);
 		
 		// now we want to set a bunch of records.
-		reply = stash_create_row(stash, nsid, tid, NULL_NAMEID, "blobber", alist, 0);
+		reply = stash_create_row(stash, tid, NULL_NAMEID, "blobber", alist, 0);
 		assert(reply);
 		if (reply->resultcode != STASH_ERR_OK) {
 			printf("Unable to create row, %d:'%s'.\n", reply->resultcode, stash_err_text(reply->resultcode));
@@ -510,7 +514,7 @@ static void test_blob(stash_t *stash, stash_nsid_t nsid, stash_tableid_t tid)
 	
 	// now query the table to return the rows we just created.
 	cond = __cond_name(0, "blobber");
-	reply = stash_query(stash, nsid, tid, 0, cond);
+	reply = stash_query(stash, tid, 0, cond);
 	if (reply->resultcode != STASH_ERR_OK) {
 		printf("Unable to query row, %d:'%s'.\n", reply->resultcode, stash_err_text(reply->resultcode));
 		sleep(1);
@@ -530,7 +534,7 @@ static void test_blob(stash_t *stash, stash_nsid_t nsid, stash_tableid_t tid)
 }
 
 
-static void test_sort(stash_t *stash, stash_nsid_t nsid, stash_tableid_t tid)
+static void test_sort(stash_t *stash, stash_tableid_t tid)
 {
 	stash_attrlist_t *alist;
 	stash_reply_t *reply;
@@ -540,13 +544,13 @@ static void test_sort(stash_t *stash, stash_nsid_t nsid, stash_tableid_t tid)
 	stash_cond_t *cond = NULL;
 	char *names[5] = {"freddy", "zach", "peter", "bob", "andy"};
 	
-	assert(stash && nsid > 0 && tid > 0);
+	assert(stash && tid > 0);
 	
 	printf("\n\nTesting sort\n");
 	
-	key_name  = stash_get_key_id(stash, nsid, tid, "name");
-	key_code  = stash_get_key_id(stash, nsid, tid, "code");
-	key_sid   = stash_get_key_id(stash, nsid, tid, "sid");
+	key_name  = stash_get_key_id(stash, tid, "name");
+	key_code  = stash_get_key_id(stash, tid, "code");
+	key_sid   = stash_get_key_id(stash, tid, "sid");
 	
 	for (i=0; i<5; i++) {
 		
@@ -560,7 +564,7 @@ static void test_sort(stash_t *stash, stash_nsid_t nsid, stash_tableid_t tid)
 		
 		// now we want to set a record.
 		rowid = 0;
-		reply = stash_create_row(stash, nsid, tid, NULL_NAMEID, "sort", alist, 0);
+		reply = stash_create_row(stash, tid, NULL_NAMEID, "sort", alist, 0);
 		assert(reply);
 		if (reply->resultcode != STASH_ERR_OK) {
 			printf("Unable to create row, %d:'%s'.\n", reply->resultcode, stash_err_text(reply->resultcode));
@@ -578,7 +582,7 @@ static void test_sort(stash_t *stash, stash_nsid_t nsid, stash_tableid_t tid)
 	
 	// now query the table to return the row we just created.
 	cond = __cond_name(0, "sort");
-	reply = stash_query(stash, nsid, tid, 0, cond);
+	reply = stash_query(stash, tid, 0, cond);
 	if (reply->resultcode != STASH_ERR_OK) {
 		printf("Unable to query row, %d:'%s'.\n", reply->resultcode, stash_err_text(reply->resultcode));
 		sleep(1);
@@ -614,25 +618,25 @@ static void test_sort(stash_t *stash, stash_nsid_t nsid, stash_tableid_t tid)
 
 
 // re-uses the 
-static void test_sortquery(stash_t *stash, stash_nsid_t nsid, stash_tableid_t tid)
+static void test_sortquery(stash_t *stash, stash_tableid_t tid)
 {
 	stash_keyid_t key_name, key_code, key_sid;
 	stash_cond_t *cond = NULL;
 	stash_query_t *query;
 	stash_reply_t *reply;
 	
-	assert(stash && nsid > 0 && tid > 0);
+	assert(stash && tid > 0);
 	
 	printf("\n\nTesting sort query (client side)\n");
 	
-	key_name  = stash_get_key_id(stash, nsid, tid, "name");
-	key_code  = stash_get_key_id(stash, nsid, tid, "code");
-	key_sid   = stash_get_key_id(stash, nsid, tid, "sid");
+	key_name  = stash_get_key_id(stash, tid, "name");
+	key_code  = stash_get_key_id(stash, tid, "code");
+	key_sid   = stash_get_key_id(stash, tid, "sid");
 
 	cond = __cond_name(0, "sort");
 	assert(cond);
 	
-	query = stash_query_new(nsid, tid);
+	query = stash_query_new(tid);
 	assert(query);
 	stash_query_condition(query, cond);
 	
@@ -697,7 +701,7 @@ static void test_sortquery(stash_t *stash, stash_nsid_t nsid, stash_tableid_t ti
 
 
 // re-uses the 
-static void test_sortquerylimit(stash_t *stash, stash_nsid_t nsid, stash_tableid_t tid)
+static void test_sortquerylimit(stash_t *stash, stash_tableid_t tid)
 {
 	stash_keyid_t key_name, key_code, key_sid;
 	stash_cond_t *cond = NULL;
@@ -705,18 +709,18 @@ static void test_sortquerylimit(stash_t *stash, stash_nsid_t nsid, stash_tableid
 	stash_reply_t *reply;
 	int limit=3;
 	
-	assert(stash && nsid > 0 && tid > 0);
+	assert(stash && tid > 0);
 	
 	printf("\n\nTesting sort query (server side)\n");
 	
-	key_name  = stash_get_key_id(stash, nsid, tid, "name");
-	key_code  = stash_get_key_id(stash, nsid, tid, "code");
-	key_sid   = stash_get_key_id(stash, nsid, tid, "sid");
+	key_name  = stash_get_key_id(stash, tid, "name");
+	key_code  = stash_get_key_id(stash, tid, "code");
+	key_sid   = stash_get_key_id(stash, tid, "sid");
 	
 	cond = __cond_name(0, "sort");
 	assert(cond);
 	
-	query = stash_query_new(nsid, tid);
+	query = stash_query_new(tid);
 	assert(query);
 	stash_query_condition(query, cond);
 	
@@ -797,7 +801,6 @@ int main(int argc, char **argv)
 	const char *username = NULL;
 	const char *password = NULL;
 	stash_result_t res;
-	stash_nsid_t nsid;
 	stash_tableid_t tid;
 	const char *newtable = "testtable";
 	
@@ -869,23 +872,23 @@ int main(int argc, char **argv)
 	}
 	else {
 
-		res =  stash_get_namespace_id(stash, "test", &nsid);
+		res =  stash_set_namespace(stash, "test");
 		if (res != STASH_ERR_OK) {
 			printf("unable to find namespace ID\n");
 		}
 		else {
 			// run through the tests.
-			tid = test_createtable(stash, newtable, nsid);
+			tid = test_createtable(stash, newtable);
 			if (tid > 0) {
-				test_insert(stash, nsid, tid);
-// 				test_expiry(stash, nsid, tid);
-				test_auto(stash, nsid, tid);
-				test_set(stash, nsid, tid);
-				test_delete(stash, nsid, tid);
-				test_blob(stash, nsid, tid);
-				test_sort(stash, nsid, tid);
-				test_sortquery(stash, nsid, tid);
-				test_sortquerylimit(stash, nsid, tid);
+				test_insert(stash, tid);
+// 				test_expiry(stash, tid);
+				test_auto(stash, tid);
+				test_set(stash, tid);
+				test_delete(stash, tid);
+				test_blob(stash, tid);
+				test_sort(stash, tid);
+				test_sortquery(stash, tid);
+				test_sortquerylimit(stash, tid);
 			}
 		}
 	}
