@@ -79,6 +79,14 @@ static void cmdFileSeq(master_t *master, risp_int_t value)
 }
 
 
+static void cmdNextVolume(master_t *master)
+{
+	assert(master);
+	
+	printf("Next Volume.\n");
+}
+	
+
 static void cmdOperation(master_t *master, risp_length_t length, void *data) 
 {
 	
@@ -583,6 +591,7 @@ int main(int argc, char **argv)
 	risp_add_command(master.risp_top, STASH_CMD_CLEAR,         &cmdClear);
 	risp_add_command(master.risp_top, STASH_CMD_FILE_SEQ,      &cmdFileSeq);
 	risp_add_command(master.risp_top, STASH_CMD_OPERATION,     &cmdOperation);
+	risp_add_command(master.risp_top, STASH_CMD_NEXT_VOLUME,   &cmdNextVolume);
 
 	master.risp_op = risp_init(NULL);
 	assert(master.risp_op);
