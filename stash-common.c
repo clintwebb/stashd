@@ -28,18 +28,13 @@
 #define MAX_PATH_LEN 2048
 
 
-//-----------------------------------------------------------------------------
-// before processing an operation, we should clear the op-data to default 
-// values.  We do not clear the trans_hi value because it will only be provided 
-// when it cycles up.  Therefore, we want to keep the trans_hi as it is.
-static void clearOpData(storage_t *storage)
-{
-	assert(storage);
-	
-	storage->opdata.trans.lo = 0;
-	storage->opdata.user_id = 0;
-	storage->opdata.datetime = 0;
-}
+nsid_t _cache_nsid = 0;
+namespace_t *_cache_ns = NULL;
+tableid_t _cache_tid = 0;
+table_t *_cache_table = NULL;
+keyid_t _cache_kid = 0;
+skey_t *_cache_key = NULL;
+
 
 static void cmdFileSeq(storage_t *storage, risp_int_t value)
 {
@@ -59,8 +54,12 @@ static void cmdNextVolume(storage_t *storage)
 {
 	assert(storage);
 	
+	assert(storage->curr_seq == storage->next_seq);
+	
 	// increment the value.
-	assert(0);
+	storage->next_seq ++;
+	
+	assert(storage->next_seq > 0);
 }
 
 
@@ -74,7 +73,9 @@ static void cmdOperation(storage_t *storage, risp_length_t length, void *data)
 	assert(length > 0);
 	assert(data);
 	
-	clearOpData(storage);
+	storage->opdata.trans.lo = 0;
+	storage->opdata.user_id = 0;
+	storage->opdata.datetime = 0;
 	
 	// we have data, that we need to put through the risp_op parser.  It will 
 	// return some transaction details, and a payload.
@@ -668,15 +669,38 @@ static void cmdSet(storage_t *storage, risp_length_t length, void *data)
 	risp_clear_all(storage->risp_data);
 	processed = risp_process(storage->risp_data, NULL, length, data);
 	assert(processed == length);
+
+	
+// 	nsid_t _cache_nsid = 0;
+// 	namespace_t *_cache_ns = NULL;
+// 	tid_t _cache_tid = 0;
+// 	table_t *_cache_table = NULL;
+	
 	
 	ns = NULL;
-	assert(risp_isset(storage->risp_data, STASH_CMD_NAMESPACE_ID));
-	ns = storage_getnamespace(storage, risp_getvalue(storage->risp_data, STASH_CMD_NAMESPACE_ID), NULL);
+	nsid_t nsid = risp_getvalue(storage->risp_data, STASH_CMD_NAMESPACE_ID);
+	assert(nsid > 0);
+	if (nsid == _cache_nsid) {
+		ns = _cache_ns;
+	}
+	else {
+		ns = storage_getnamespace(storage, nsid, NULL);
+		_cache_nsid = nsid;
+		_cache_ns = ns;
+	}
 	assert(ns);
 	
 	table = NULL;
-	assert(risp_isset(storage->risp_data, STASH_CMD_TABLE_ID));
-	table = storage_gettable(storage, ns, risp_getvalue(storage->risp_data, STASH_CMD_TABLE_ID), NULL);
+	tableid_t tid = risp_getvalue(storage->risp_data, STASH_CMD_TABLE_ID);
+	assert(tid > 0);
+	if (tid == _cache_tid) {
+		table = _cache_table;
+	}
+	else {
+		table = storage_gettable(storage, ns, tid, NULL);
+		_cache_tid = tid;
+		_cache_table = table;
+	}
 	assert(table);
 	
 	row = NULL;
@@ -685,8 +709,16 @@ static void cmdSet(storage_t *storage, risp_length_t length, void *data)
 	assert(row);
 
 	key = NULL;
-	assert(risp_isset(storage->risp_data, STASH_CMD_KEY_ID));
-	key = storage_getkey(table, risp_getvalue(storage->risp_data, STASH_CMD_KEY_ID), NULL);
+	keyid_t kid = risp_getvalue(storage->risp_data, STASH_CMD_KEY_ID);
+	assert(kid > 0);
+	if (kid == _cache_kid) {
+		key = _cache_key;
+	}
+	else {
+		key = storage_getkey(table, kid, NULL);
+		_cache_kid = kid;
+		_cache_key = key;
+	}
 	assert(key);
 
 	expires = 0;
@@ -1062,7 +1094,7 @@ storage_t * storage_init(storage_t *st)
 	storage_t *storage;
 	
 	if (st == NULL) {
-		storage = malloc(sizeof(storage_t));
+		storage = calloc(1, sizeof(storage_t));
 		storage->internally_created = 1;
 	}
 	else {
@@ -1076,7 +1108,9 @@ storage_t * storage_init(storage_t *st)
 	storage->loaddata = IGNORE_DATA;
 
 	storage->opdata.trans.hi = 0;
-	clearOpData(storage);
+	storage->opdata.trans.lo = 0;
+	storage->opdata.user_id = 0;
+	storage->opdata.datetime = 0;
 	
 	// create the RISP processor.
 	storage->risp_top = risp_init(NULL);
@@ -1156,6 +1190,9 @@ storage_t * storage_init(storage_t *st)
 	storage->writebuf = expbuf_init(NULL, 0);
 	assert(storage->writebuf);
 	
+	storage->maxsplit = 1024 * 1024 * 1024;
+	storage->basepath = NULL;
+	
 	return(storage);
 }
 
@@ -1223,6 +1260,7 @@ void storage_free(storage_t *storage)
 	if (storage->file_handle >= 0) {
 		flock(storage->file_handle, LOCK_UN);
 		close(storage->file_handle);
+		storage->file_handle = -1;
 	}
 	
 	assert(storage->users);
@@ -1267,6 +1305,11 @@ void storage_free(storage_t *storage)
 	}
 	storage->locked_files = ll_free(storage->locked_files);
 	assert(storage->locked_files == NULL);
+	
+	if (storage->basepath) {
+		free(storage->basepath);
+		storage->basepath = NULL;
+	}
 	
 	if (storage->internally_created == 1) {
 		free(storage);
@@ -1356,6 +1399,14 @@ void storage_unlock_master(storage_t *storage, const char *basedir)
 	storage_unlock_file(storage, filename);
 }
 
+void storage_setlimit(storage_t *storage, int maxsplit)
+{
+	assert(storage);
+	assert(maxsplit > 0);
+	
+	storage->maxsplit = maxsplit;
+}
+
 
 
 //-----------------------------------------------------------------------------
@@ -1365,7 +1416,6 @@ void storage_process_file(storage_t *storage, const char *filename, risp_t *risp
 {
 	int handle;
 	expbuf_t *overflow;
-	char buffer[INIT_BUF_SIZE];
 	int done;
 	ssize_t len;
 	risp_length_t processed;
@@ -1389,9 +1439,13 @@ void storage_process_file(storage_t *storage, const char *filename, risp_t *risp
 		// while data is available.
 		done = 0;
 		while (done == 0) {
+
+			if (BUF_AVAIL(overflow) < INIT_BUF_SIZE) {
+				expbuf_shrink(overflow, INIT_BUF_SIZE);
+			}
 			
 			// read data in to the buffer.
-			len = read(handle, buffer, sizeof(buffer));
+			len = read(handle, BUF_OFFSET(overflow), BUF_AVAIL(overflow));
 			if (len < 0) {
 				// there was an error....
 				assert(0);
@@ -1402,10 +1456,11 @@ void storage_process_file(storage_t *storage, const char *filename, risp_t *risp
 				done = 1;
 			}
 			else {
-				storage->file_size += len;
+				// since we read data directly into the buffer, we need to increase the length of the bufer.
+				BUF_LENGTH(overflow) += len;
 				
-				// we got some data, need to add it to the overflow and then attempt to process it.
-				expbuf_add(overflow, buffer, len);
+				// we are keeping track of how much data we read from the buffer.
+				storage->file_size += len;
 				
 				// process the data.
 				processed = risp_process(risp, usrdata, BUF_LENGTH(overflow), BUF_DATA(overflow));
@@ -1431,6 +1486,29 @@ void storage_process_file(storage_t *storage, const char *filename, risp_t *risp
 }
 
 
+
+static void open_file(storage_t *storage)
+{
+	char fullpath[MAX_PATH_LEN];
+	int n;
+	
+	assert(storage);
+	assert(storage->basepath);
+	
+	n = snprintf(fullpath, MAX_PATH_LEN, "%s/%08d.stash", storage->basepath, storage->next_seq);
+	assert(n < MAX_PATH_LEN);
+	
+	// open the file
+	assert(storage->file_handle < 0);
+	storage->file_handle = open(fullpath, O_WRONLY | O_APPEND);
+	if (storage->file_handle) {	
+		// lock the file.
+		flock(storage->file_handle, LOCK_EX);
+	}
+	
+	// TODO: need to handle failures.
+}
+
 void storage_process(storage_t *storage, const char *path, __storage_keepopen_e keep_open, __storage_loaddata_e load_data)
 {
 	char fullpath[MAX_PATH_LEN];
@@ -1438,6 +1516,10 @@ void storage_process(storage_t *storage, const char *path, __storage_keepopen_e 
 	
 	assert(storage);
 	assert(path);
+	
+	assert(storage->basepath == NULL);
+	storage->basepath = strdup(path);
+	assert(storage->basepath);
 
 	// make sure that the storage object is empty.
 	assert(ll_count(storage->namespaces) == 0);
@@ -1459,15 +1541,7 @@ void storage_process(storage_t *storage, const char *path, __storage_keepopen_e 
 	
 	// if we are supposed to keep the database open, then we need to open it now.
 	if (keep_open == KEEP_OPEN) {
-		n = snprintf(fullpath, MAX_PATH_LEN, "%s/%08d.stash", path, storage->next_seq);
-		assert(storage->file_handle < 0);
-		
-		// open the file (for reading).
-		storage->file_handle = open(fullpath, O_WRONLY | O_APPEND);
-		if (storage->file_handle) {	
-			// lock the file.
-			flock(storage->file_handle, LOCK_EX);
-		}
+		open_file(storage);
 	}
 }
 
@@ -1524,6 +1598,68 @@ int storage_username_avail(storage_t *storage, const char *username)
 	return(result);
 }
 
+// the file is full, and needs to be split off.
+static void split_file(storage_t *storage) 
+{
+	char fullpath[MAX_PATH_LEN];
+	int n;
+	
+	assert(storage);
+
+	// we should definately have a file handle at this point.
+	assert(storage->file_handle >= 0);
+	
+	// at this point, there shouldn't be anything pending to be sent.
+	assert(storage->writebuf);
+	assert(BUF_LENGTH(storage->writebuf) == 0);
+	
+	// write the CMD that indicates the end of the file.
+	rispbuf_addCmd(storage->writebuf, STASH_CMD_NEXT_VOLUME);
+	n = write(storage->file_handle, BUF_DATA(storage->writebuf), BUF_LENGTH(storage->writebuf));
+	assert(n == BUF_LENGTH(storage->writebuf));
+	expbuf_purge(storage->writebuf, n);
+	
+
+	
+	// close the file.
+	flock(storage->file_handle, LOCK_UN);
+	close(storage->file_handle);
+	storage->file_handle = -1;
+
+	// reset the file-size counter.
+	storage->file_size = 0;
+	
+	// increment the file number.
+	assert(storage->curr_seq == storage->next_seq);
+	storage->next_seq ++;
+	storage->curr_seq = storage->next_seq;
+
+	assert(storage->basepath);
+	
+	n = snprintf(fullpath, MAX_PATH_LEN, "%s/%08d.stash", storage->basepath, storage->next_seq);
+	assert(n < MAX_PATH_LEN);
+	
+	// open the file
+	assert(storage->file_handle < 0);
+	mode_t mode = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
+	storage->file_handle = open(fullpath, O_CREAT | O_WRONLY, mode);
+	if (storage->file_handle >= 0) {	
+		// lock the file.
+		flock(storage->file_handle, LOCK_EX);
+	}
+	
+	// add the new sequence number to the file.
+	assert(storage->curr_seq > 0);
+	assert(storage->writebuf);
+	assert(BUF_LENGTH(storage->writebuf) == 0);
+	rispbuf_addCmd(storage->writebuf, STASH_CMD_CLEAR);
+	rispbuf_addInt(storage->writebuf, STASH_CMD_FILE_SEQ, storage->curr_seq);
+	n = write(storage->file_handle, BUF_DATA(storage->writebuf), BUF_LENGTH(storage->writebuf));
+	assert(n == BUF_LENGTH(storage->writebuf));
+	expbuf_purge(storage->writebuf, n);
+	assert(BUF_LENGTH(storage->writebuf) == 0);
+	
+}
 
 static void write_callback(const int fd, const short which, void *arg)
 {
@@ -1545,11 +1681,9 @@ static void write_callback(const int fd, const short which, void *arg)
 	storage->file_size += n;
 	expbuf_purge(storage->writebuf, n);
 	
-	printf("wrote %d\n", n);
-	
 	// if we are over our file-size limit, then close the file and create a new one.
-	if (storage->file_size >= MAX_FILESIZE) { 
-		assert(0);
+	if (storage->file_size >= storage->maxsplit) { 
+		split_file(storage);
 	}
 	
 	event_free(storage->write_event);
@@ -1631,8 +1765,8 @@ static void saveOperation(storage_t *storage, risp_command_t cmd, expbuf_t *buf,
 		storage->file_size += n;
 	
 		// if we are over our file-size limit, then close the file and create a new one.
-		if (storage->file_size >= MAX_FILESIZE) { 
-			assert(0);
+		if (storage->file_size >= storage->maxsplit) { 
+			split_file(storage);
 		}
 	}
 	

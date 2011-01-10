@@ -24,13 +24,12 @@
 
 
 
-#define INIT_BUF_SIZE 1024
+#define INIT_BUF_SIZE (1024*32)
 #ifndef MAX_PATH_LEN
 	#define MAX_PATH_LEN  2048
 #endif
 
 
-#define MAX_FILESIZE (2000000000)
 
 
 // when accessing the data files directly, and adding transactions, we have to 
@@ -189,6 +188,9 @@ typedef struct {
 	expbuf_t *writebuf;
 	
 	short int internally_created;
+	
+	int maxsplit;
+	char *basepath;
 } storage_t;
 
 
@@ -201,6 +203,8 @@ void storage_unlock_file(storage_t *storage, const char *filename);
 
 int storage_lock_master(storage_t *storage, const char *basedir);
 void storage_unlock_master(storage_t *storage, const char *basedir);
+
+void storage_setlimit(storage_t *storage, int maxsplit);
 
 void storage_process_file(storage_t *storage, const char *filename, risp_t *risp, void *usrdata);
 

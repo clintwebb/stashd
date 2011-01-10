@@ -45,6 +45,7 @@
 
 
 #define DEFAULT_BUFSIZE 4096
+#define DEFAULT_MAX_SPLIT (1024 * 1024 * 1024)
 
 #ifndef INVALID_HANDLE
 #define INVALID_HANDLE -1
@@ -88,6 +89,7 @@ const char *_interfaces = "127.0.0.1:13600";
 int _maxconns = 1024;
 int _verbose = 0;
 int _daemonize = 0;
+int _maxsplit = DEFAULT_MAX_SPLIT;
 const char *_storepath = NULL;
 const char *_username = NULL;
 const char *_pid_file = NULL;
@@ -340,7 +342,7 @@ static void accept_conn_cb(
 
 	// create client object.
 	// TODO: We should be pulling these client objects out of a mempool.
-	client = malloc(sizeof(*client));
+	client = calloc(1, sizeof(*client));
 	assert(client);
 	client_init(client, server, fd, address, socklen);
 }
@@ -443,7 +445,7 @@ static void server_shutdown(server_t *server)
 	assert(server->clients);
 	ll_start(server->clients);
 	while (( client = ll_next(server->clients))) {
-		printf("shutting down client\n");
+// 		printf("shutting down client\n");
 		client_shutdown(client);
 	}
 	ll_finish(server->clients);
@@ -459,7 +461,7 @@ static void server_free(server_t *server)
 	server_shutdown(server);
 	
 	assert(server->clients);
-	printf("server->clients = %d\n", ll_count(server->clients));
+// 	printf("server->clients = %d\n", ll_count(server->clients));
 	assert(ll_count(server->clients) == 0);
 	server->clients = ll_free(server->clients);
 	assert(server->clients == NULL);
@@ -491,13 +493,13 @@ static void sigint_handler(evutil_socket_t fd, short what, void *arg)
 	// need to initiate an RQ shutdown.
 	assert(arg == NULL);
 	
-	printf("SIGINT received.\n\n");
+// 	printf("SIGINT received.\n\n");
 	
 	// need to send a message to each node telling them that we are shutting down.
 	assert(_servers);
 	ll_start(_servers);
 	while ((server = ll_next(_servers))) {
-		printf("shutting down server.\n");
+// 		printf("shutting down server.\n");
 		server_shutdown(server);
 	}
 	ll_finish(_servers);
@@ -511,7 +513,7 @@ static void sigint_handler(evutil_socket_t fd, short what, void *arg)
 //	event_free(_sighup_event);
 //	_sighup_event = NULL;
 	
-	printf("SIGINT complete\n");
+// 	printf("SIGINT complete\n");
 }
 
 
@@ -1339,8 +1341,6 @@ static void cmdSet(client_t *client, const risp_length_t length, const risp_data
 	name_t      *name;
 	raw_attr_t  *rawattr;	// attribute received from the client.
 	skey_t      *key;
-	attr_t      *attr;
-	attr_t      *tmp_attr;
 	int          expires = 0;
 	expbuf_t    *buf_row;
 	expbuf_t    *buf_attr;
@@ -1497,52 +1497,49 @@ static void cmdSet(client_t *client, const risp_length_t length, const risp_data
 		assert(key);
 		
 		// need to ensure that the key doesnt already exist for this row.
-		attr = NULL;
-		ll_start(row->attrlist);
-		while(attr == NULL && (tmp_attr = ll_next(row->attrlist))) {
-			if (tmp_attr->key == key) {
+// 		attr_t *tmp_attr;
+// 		attr = NULL;
+// 		ll_start(row->attrlist);
+// 		while(attr == NULL && (tmp_attr = ll_next(row->attrlist))) {
+// 			if (tmp_attr->key == key) {
 				// we have a match where the key already exists for the table.
 				// we need to look at the table mode to see what to do here.
-				assert(0);
+// 				assert(0);
 				
-				attr = tmp_attr;
-			}
-		}
-		ll_finish(row->attrlist);
+// 				attr = tmp_attr;
+// 			}
+// 		}
+// 		ll_finish(row->attrlist);
 		
 		// set the attribute.
-		if (attr == NULL) {
-			assert(rawattr->expires >= 0);
+		assert(rawattr->expires >= 0);
 
-			
-			if (rawattr->value->valtype == STASH_VALTYPE_AUTO) {
-				autoval = 1;
-			}
-			else {
-				autoval = 0;
-			}
-			
-			attr = storage_setattr(_storage, client->user, row, key, rawattr->value, rawattr->expires);
-			assert(attr);
-			
-			if (autoval == 1) {
-				assert(BUF_LENGTH(buf_value) == 0);
-				assert(attr->value->valtype == STASH_VALTYPE_INT);
-				stash_build_value(buf_value, attr->value);
-				
-				rispbuf_addInt(buf_attr, STASH_CMD_KEY_ID, attr->key->kid);
-				rispbuf_addBuffer(buf_attr, STASH_CMD_VALUE, buf_value);
-				expbuf_clear(buf_value);
-				
-				rispbuf_addBuffer(buf_row, STASH_CMD_ATTRIBUTE, buf_attr);
-				expbuf_clear(buf_attr);
-				
-				attr_count ++;
-				assert(attr_count > 0);
-			}
+		
+		if (rawattr->value->valtype == STASH_VALTYPE_AUTO) {
+			autoval = 1;
 		}
 		else {
-			assert(0);
+			autoval = 0;
+		}
+		
+		attr_t *attr;
+		attr = storage_setattr(_storage, client->user, row, key, rawattr->value, rawattr->expires);
+		assert(attr);
+		
+		if (autoval == 1) {
+			assert(BUF_LENGTH(buf_value) == 0);
+			assert(attr->value->valtype == STASH_VALTYPE_INT);
+			stash_build_value(buf_value, attr->value);
+			
+			rispbuf_addInt(buf_attr, STASH_CMD_KEY_ID, attr->key->kid);
+			rispbuf_addBuffer(buf_attr, STASH_CMD_VALUE, buf_value);
+			expbuf_clear(buf_value);
+			
+			rispbuf_addBuffer(buf_row, STASH_CMD_ATTRIBUTE, buf_attr);
+			expbuf_clear(buf_attr);
+			
+			attr_count ++;
+			assert(attr_count > 0);
 		}
 		
 		// need to free up the rawattr.
@@ -1678,7 +1675,7 @@ static void cmdDelete(client_t *client, const risp_length_t length, const risp_d
 	assert(client && length > 0 && data);
 	
 	
-	printf("Received DELETE cmd\n");
+// 	printf("Received DELETE cmd\n");
 	
 	// expand the data
 	rdata = procRispData(client, length, data);
@@ -2364,7 +2361,7 @@ static void read_handler(int fd, short int flags, void *arg)
 	}
 	else {
 		// the connection was closed, or there was an error.
-		printf("socket %d closed. res=%d, errno=%d,'%s'\n", fd, res, errno, strerror(errno));
+// 		printf("socket %d closed. res=%d, errno=%d,'%s'\n", fd, res, errno, strerror(errno));
 		
 		// free the client resources.
 		client_free(client);
@@ -2385,6 +2382,7 @@ static void usage(void) {
 	printf("-l <ip_addr:port>  interface to listen on, default is INDRR_ANY\n");
 	printf("-c <num>           max simultaneous connections, default is 1024\n");
 	printf("-b <path>          storage path\n");
+	printf("-m <max>           max storage file size (in mb) before splitting (default: 1024).\n");
 	printf("\n");
 	printf("-d                 run as a daemon\n");
 	printf("-P <file>          save PID in <file>, only used with -d option\n");
@@ -2406,7 +2404,17 @@ static void parse_params(int argc, char **argv)
 	
 	// process arguments
 	/// Need to check the options in here, there're possibly ones that we dont need.
-	while ((c = getopt(argc, argv, "c:hvdu:P:l:b:")) != -1) {
+	while ((c = getopt(argc, argv, 
+		"m:"    /* max file size before splitting */
+		"c:"    /* max connections. */
+		"h"     /* help */
+		"v"     /* verbosity */
+		"d"     /* daemon */
+		"u:"    /* user to run as */
+		"P:"    /* PID file */
+		"l:"    /* interfaces to listen on */
+		"b:"    /* base directory */
+		)) != -1) {
 		switch (c) {
 			case 'c':
 				_maxconns = atoi(optarg);
@@ -2444,6 +2452,12 @@ static void parse_params(int argc, char **argv)
 				_interfaces = optarg;
 				assert(_interfaces != NULL);
 				assert(_interfaces[0] != 0);
+				break;
+			case 'm':
+				_maxsplit = atoi(optarg) * 1024 * 1024;
+				if (_maxsplit <= 0) {
+					_maxsplit = DEFAULT_MAX_SPLIT;
+				}
 				break;
 				
 			default:
@@ -2613,6 +2627,8 @@ int main(int argc, char **argv)
 	assert(_storage);
 	assert(_storepath);
 	storage_lock_master(_storage, _storepath);
+	assert(_maxsplit > 0);
+	storage_setlimit(_storage, _maxsplit);
 	storage_process(_storage, _storepath, KEEP_OPEN, LOAD_DATA);
 	gettimeofday(&time_stop, NULL);
 	if (_verbose > 0) { printf("Stored data loaded in %d seconds.\n", (int) (time_stop.tv_sec - time_start.tv_sec)); }
@@ -2699,9 +2715,9 @@ int main(int argc, char **argv)
 	
 	_interfaces = NULL;
 	
-	if (_storepath) { free(_storepath); _storepath = NULL; }
-	if (_username) { free(_username); _username = NULL; }
-	if (_pid_file) { free(_pid_file); _pid_file = NULL; }
+	if (_storepath) { free((void*)_storepath); _storepath = NULL; }
+	if (_username) { free((void*)_username); _username = NULL; }
+	if (_pid_file) { free((void*)_pid_file); _pid_file = NULL; }
 	
 	assert(_risp == NULL);
 	assert(_risp_req == NULL);
