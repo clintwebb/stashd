@@ -48,11 +48,11 @@ test -e testplan/testplan.txt && rm $_
 if [ "$DEBUG" == "yes" ]
 then
   echo "Start stash."
-  echo "./stashd -v -b testplan/db -l 127.0.0.1:13600"
+  echo "./stashd -m 1 -v -b testplan/db -l 127.0.0.1:13600"
   echo "Press Enter to continue"
   read
 else
-  ./stashd -v -b testplan/db -l 127.0.0.1:13600 > testplan/stashd.log & 
+  ./stashd -v -b testplan/db -l 127.0.0.1:13600 -m 1 > testplan/stashd.log & 
   SDPID=$!
   echo "stashd pid = $SDPID"
   sleep 2
