@@ -123,10 +123,8 @@ int main(int argc, char **argv)
 	fp = NULL;
 	
 	// create the files directory.
-	int status;
 	sprintf(fullpath, "%s/%08d", basedir, 0);
-	status = mkdir(fullpath, S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH);
-	if (status != 0) {
+	if (mkdir(fullpath, S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH) != 0) {
 		fprintf(stderr, "Unable to create datafile directory\n");
 	}
 	
