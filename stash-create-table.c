@@ -73,7 +73,6 @@ int main(int argc, char **argv)
 	const char *password = NULL;
 	int option_map = 0;
 	stash_result_t res;
-	stash_nsid_t nsid;
 	stash_tableid_t tid;
 	
 	assert(argc >= 0);
@@ -154,16 +153,13 @@ int main(int argc, char **argv)
 
 		// get the namespaceID, because we will be using for the request.
 		assert(namespace);
-		nsid = 0;
-		res = stash_get_namespace_id(stash, namespace, &nsid);
+		res = stash_set_namespace(stash, namespace);
 		if (res != STASH_ERR_OK) { fprintf(stderr, "error: %d:'%s'\n", res, stash_err_text(res)); }
 		else {
 			
-			assert(nsid > 0);
-			
 			// attempt to create the table.
 			tid = 0;
-			res = stash_create_table(stash, nsid, table, option_map, &tid);
+			res = stash_create_table(stash, table, option_map, &tid);
 			if (res != STASH_ERR_OK) { fprintf(stderr, "error: %d:'%s'\n", res, stash_err_text(res)); }
 			else {
 				assert(tid > 0);
