@@ -28,13 +28,6 @@
 #define MAX_PATH_LEN 2048
 
 
-nsid_t _cache_nsid = 0;
-namespace_t *_cache_ns = NULL;
-tableid_t _cache_tid = 0;
-table_t *_cache_table = NULL;
-keyid_t _cache_kid = 0;
-skey_t *_cache_key = NULL;
-
 
 static void cmdFileSeq(storage_t *storage, risp_int_t value)
 {
@@ -669,38 +662,13 @@ static void cmdSet(storage_t *storage, risp_length_t length, void *data)
 	risp_clear_all(storage->risp_data);
 	processed = risp_process(storage->risp_data, NULL, length, data);
 	assert(processed == length);
-
-	
-// 	nsid_t _cache_nsid = 0;
-// 	namespace_t *_cache_ns = NULL;
-// 	tid_t _cache_tid = 0;
-// 	table_t *_cache_table = NULL;
-	
 	
 	ns = NULL;
-	nsid_t nsid = risp_getvalue(storage->risp_data, STASH_CMD_NAMESPACE_ID);
-	assert(nsid > 0);
-	if (nsid == _cache_nsid) {
-		ns = _cache_ns;
-	}
-	else {
-		ns = storage_getnamespace(storage, nsid, NULL);
-		_cache_nsid = nsid;
-		_cache_ns = ns;
-	}
+	ns = storage_getnamespace(storage, risp_getvalue(storage->risp_data, STASH_CMD_NAMESPACE_ID), NULL);
 	assert(ns);
 	
 	table = NULL;
-	tableid_t tid = risp_getvalue(storage->risp_data, STASH_CMD_TABLE_ID);
-	assert(tid > 0);
-	if (tid == _cache_tid) {
-		table = _cache_table;
-	}
-	else {
-		table = storage_gettable(storage, ns, tid, NULL);
-		_cache_tid = tid;
-		_cache_table = table;
-	}
+	table = storage_gettable(storage, ns, risp_getvalue(storage->risp_data, STASH_CMD_TABLE_ID), NULL);
 	assert(table);
 	
 	row = NULL;
@@ -709,16 +677,7 @@ static void cmdSet(storage_t *storage, risp_length_t length, void *data)
 	assert(row);
 
 	key = NULL;
-	keyid_t kid = risp_getvalue(storage->risp_data, STASH_CMD_KEY_ID);
-	assert(kid > 0);
-	if (kid == _cache_kid) {
-		key = _cache_key;
-	}
-	else {
-		key = storage_getkey(table, kid, NULL);
-		_cache_kid = kid;
-		_cache_key = key;
-	}
+	key = storage_getkey(table, risp_getvalue(storage->risp_data, STASH_CMD_KEY_ID), NULL);
 	assert(key);
 
 	expires = 0;

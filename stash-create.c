@@ -14,8 +14,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/resource.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include <unistd.h>
-
 
 
 #define PACKAGE						"stash-create"
@@ -120,6 +121,14 @@ int main(int argc, char **argv)
 	assert(fp);
 	fclose(fp);
 	fp = NULL;
+	
+	// create the files directory.
+	int status;
+	sprintf(fullpath, "%s/%08d", basedir, 0);
+	status = mkdir(fullpath, S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH);
+	if (status != 0) {
+		fprintf(stderr, "Unable to create datafile directory\n");
+	}
 	
 	// free the memory for the path.
 	free(fullpath);
