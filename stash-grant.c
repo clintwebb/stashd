@@ -306,14 +306,15 @@ int main(int argc, char **argv)
 			if (params.namespace) {
 				res = stash_get_namespace_id(stash, params.namespace, &nsid);
 				if (res != STASH_ERR_OK) { fprintf(stderr, "error parsing namespace: %d:'%s'\n", res, stash_err_text(res)); }
+				stash_set_namespace(stash, params.namespace);
+				
+				if (params.table) {
+					assert(nsid > 0);
+					res = stash_get_table_id(stash, params.table, &tid);
+					if (res != STASH_ERR_OK) { fprintf(stderr, "error parsing table: %d:'%s'\n", res, stash_err_text(res)); }
+				}
 			}
 
-			if (params.table) {
-				assert(nsid > 0);
-				res = stash_get_table_id(stash, nsid, params.table, &tid);
-				if (res != STASH_ERR_OK) { fprintf(stderr, "error parsing table: %d:'%s'\n", res, stash_err_text(res)); }
-			}
-			
 			if (params.user) {
 				res = stash_get_user_id(stash, params.user, &uid);
 				if (res != STASH_ERR_OK) { fprintf(stderr, "error parsing username: %d:'%s'\n", res, stash_err_text(res)); }
