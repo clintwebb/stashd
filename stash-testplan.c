@@ -63,6 +63,7 @@ static stash_tableid_t test_createtable(stash_t *stash, const char *newtable)
 {
 	stash_result_t res;
 	stash_tableid_t tid;
+	stash_nsid_t nsid;
 
 	assert(stash && newtable);
 	
@@ -75,8 +76,12 @@ static stash_tableid_t test_createtable(stash_t *stash, const char *newtable)
 		printf("Table '%s' created.\n", newtable);
 		assert(tid > 0);
 		
+		nsid = 0;
+		stash_get_namespace_id(stash, "test", &nsid);
+		assert(nsid > 0);
+		
 		// grant rights to the table.
-		res = stash_grant(stash, 0, tid, STASH_RIGHT_CREATE | STASH_RIGHT_SET | STASH_RIGHT_UPDATE | STASH_RIGHT_DELETE | STASH_RIGHT_QUERY);
+		res = stash_grant(stash, 0, nsid, tid, STASH_RIGHT_CREATE | STASH_RIGHT_SET | STASH_RIGHT_UPDATE | STASH_RIGHT_DELETE | STASH_RIGHT_QUERY);
 		if (res != STASH_ERR_OK) {
 			printf("Unable to set rights on table. %d:'%s'\n", res, stash_err_text(res));
 		}
@@ -104,6 +109,9 @@ static void test_insert(stash_t *stash, stash_tableid_t tid)
 	key_name  = stash_get_key_id(stash, tid, "name");
 	key_id    = stash_get_key_id(stash, tid, "id");
 	key_total = stash_get_key_id(stash, tid, "total");
+	assert(key_name > 0);
+	assert(key_id > 0);
+	assert(key_total > 0);
 
 	alist = stash_init_alist(stash);
 	assert(alist);
@@ -175,6 +183,9 @@ static void test_expiry(stash_t *stash, stash_tableid_t tid)
 	key_name  = stash_get_key_id(stash, tid, "name");
 	key_code  = stash_get_key_id(stash, tid, "code");
 	key_tmp   = stash_get_key_id(stash, tid, "tmp");
+	assert(key_name > 0);
+	assert(key_code > 0);
+	assert(key_tmp > 0);
 			
 	alist = stash_init_alist(stash);
 	assert(alist);
@@ -235,6 +246,9 @@ static void test_auto(stash_t *stash, stash_tableid_t tid)
 	key_name  = stash_get_key_id(stash, tid, "name");
 	key_code  = stash_get_key_id(stash, tid, "code");
 	key_sid   = stash_get_key_id(stash, tid, "sid");
+	assert(key_name > 0);
+	assert(key_code > 0);
+	assert(key_sid > 0);
 	
 	alist = stash_init_alist(stash);
 	assert(alist);
@@ -283,6 +297,9 @@ static void test_set(stash_t *stash, stash_tableid_t tid)
 	key_name  = stash_get_key_id(stash, tid, "name");
 	key_code  = stash_get_key_id(stash, tid, "code");
 	key_sid   = stash_get_key_id(stash, tid, "sid");
+	assert(key_name > 0);
+	assert(key_code > 0);
+	assert(key_sid > 0);
 	
 	
 	for (i=0; i<5; i++) {
@@ -366,6 +383,9 @@ static void test_delete(stash_t *stash, stash_tableid_t tid)
 	key_name  = stash_get_key_id(stash, tid, "name");
 	key_code  = stash_get_key_id(stash, tid, "code");
 	key_sid   = stash_get_key_id(stash, tid, "sid");
+	assert(key_name > 0);
+	assert(key_code > 0);
+	assert(key_sid > 0);
 	
 	
 	// set the initial attributes.
@@ -467,6 +487,9 @@ static void test_blob(stash_t *stash, stash_tableid_t tid)
 	key_name  = stash_get_key_id(stash, tid, "name");
 	key_sid   = stash_get_key_id(stash, tid, "sid");
 	key_data  = stash_get_key_id(stash, tid, "data");
+	assert(key_name > 0);
+	assert(key_sid > 0);
+	assert(key_data > 0);
 	
 	// init the data that we want to store.
 	data = malloc(1024*64);
@@ -551,6 +574,9 @@ static void test_sort(stash_t *stash, stash_tableid_t tid)
 	key_name  = stash_get_key_id(stash, tid, "name");
 	key_code  = stash_get_key_id(stash, tid, "code");
 	key_sid   = stash_get_key_id(stash, tid, "sid");
+	assert(key_name > 0);
+	assert(key_code > 0);
+	assert(key_sid > 0);
 	
 	for (i=0; i<5; i++) {
 		
