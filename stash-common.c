@@ -2804,12 +2804,15 @@ expbuf_t * storage_get_blob(storage_t *storage, int datalen, int seq, transid_t 
 		assert(fp);
 		
 		buffer = expbuf_init(NULL, datalen);
+		assert(buffer);
 		
 		while (left > 0) {
 			chunk = left;	// make sure chunk is not too big.
 			if (chunk > 4096) chunk = 4096;
 			
-			n = fread(BUF_DATA(buffer), chunk, 1, fp);
+			assert(BUF_AVAIL(buffer) >= chunk);
+			
+			n = fread(BUF_OFFSET(buffer), chunk, 1, fp);
 			assert(n == 1);
 			BUF_LENGTH(buffer) += chunk;
 			left -= chunk;
@@ -2817,6 +2820,8 @@ expbuf_t * storage_get_blob(storage_t *storage, int datalen, int seq, transid_t 
 		assert(left == 0);
 		
 		fclose(fp);
+		
+		assert(BUF_LENGTH(buffer) == datalen);
 	}
 	
 	return(buffer);
