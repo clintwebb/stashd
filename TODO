@@ -2,13 +2,12 @@ stash
 tasks to do
 
 
- *  remove control structure, and instead use global variables.  There is no point at all in using the control structure.
-
  *  File splitting 
 	* command line option
 	* defaults
 	* manpage
 
+ *  When storing the users password, we should 'bcrypt' it with a salt.  That way, we can compare a password, but have no easy way of 'listing' a password if we have the data file.
 
  *  when deleting a table or a namespace, need to go through each user and check the rights list and remove all rights that point to the table or namespace we are deleting.
 
@@ -21,9 +20,6 @@ tasks to do
  *  create tool to compact the data source (see notes/compact_tool.txt)
 
  *  the connections need to take the priority into account when establishing connections.  First iteration allows for it to just attempt the first, and if that drops off, try the next... and so on.
-
- *  stashd does not shutdown cleanly while a client is connected.
-       stashd: stashd.c:501: client_shutdown: Assertion `client->closing == 0' failed.
 
  *  stashd needs a startup option which indicates that text threshold that forces text to be written out to seperate files instead of being included in the main file.   We should also include an option when querying data to also include external data.  Normally this would not be wanted, but could very well be needed in some instances.
  
@@ -47,6 +43,13 @@ tasks to do
 
  *  Not very happy that all the command line tools that access the files directly, need to link in libevent and other things that really aren't needed.  THerefore, I think we need to split up stash-common even further, maybe into its own library.   Then the stash tools can be put in a seperate repository and kept seperate from the bare daemon.
 
+ *  modify the output counter so that it can handle larger file sizes than 2gb (signed int).
+
+ *  specify a memory limit.  When allocating memory for indexes and data, keep track of it.  When we hit the specified limit, we push the least used out to disk.   This is for VPS environments that have limited memory and no swapspace.
+
+ *  Increase performance when reading a stash data file into memory.  Currently it is taking 8 seconds to load a 15mb database.  Thats not very good.
+
+ *  Look at STRICT mode to determine if it actually would be useful to anyone.
 
 
-
+ 

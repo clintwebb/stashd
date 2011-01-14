@@ -90,6 +90,7 @@ int _maxconns = 1024;
 int _verbose = 0;
 int _daemonize = 0;
 int _maxsplit = DEFAULT_MAX_SPLIT;
+unsigned int _threshold = 0;
 const char *_storepath = NULL;
 const char *_username = NULL;
 const char *_pid_file = NULL;
@@ -117,7 +118,7 @@ typedef struct {
 // attribute pair.
 typedef struct {
 	stash_keyid_t keyid;
-	stash_value_t *value;
+	value_t *value;
 	int expires;
 } raw_attr_t;
 
@@ -586,17 +587,6 @@ static void write_handler(int fd, short int flags, void *arg)
 	}
 }
 
-static value_t * value_free(value_t *value)
-{
-	if (value->valtype == STASH_VALTYPE_STR) {
-		assert((value->datalen == 0 && value->value.str == NULL) || (value->datalen > 0 && value->value.str));
-		if (value->value.str) {
-			free((void*)value->value.str);
-		}
-	}
-	free(value);
-	return(NULL);
-}
 
 //-----------------------------------------------------------------------------
 // given a list of attributes, need to pull em from the list and free each one.  
@@ -610,7 +600,7 @@ static void raw_attrlist_free(list_t *list)
 	while ((rawattr = ll_pop_head(list))) {
 		assert(rawattr->keyid);
 		assert(rawattr->value);
-		rawattr->value = value_free(rawattr->value);
+		value_free(rawattr->value);
 		assert(rawattr->value == NULL);
 	}
 }
@@ -1291,6 +1281,7 @@ static void cmdAttribute(client_t *client, const risp_length_t length, const ris
 	risp_data_t *ddata;
 	
 	assert(client && length > 0 && data);
+	assert(_storage);
 	
 	// process out the values in the risp stream.
 	assert(_risp_attr);
@@ -1317,7 +1308,7 @@ static void cmdAttribute(client_t *client, const risp_length_t length, const ris
 	dlen = risp_getlength(_risp_attr, STASH_CMD_VALUE);
 	assert(ddata);
 	assert(dlen > 0);
-	raw->value = stash_parse_value(ddata, dlen);
+	raw->value = parse_value(_storage, ddata, dlen);
 	assert(raw->value);
 
 	// if we have an expiry
@@ -1367,10 +1358,9 @@ static void cmdSet(client_t *client, const risp_length_t length, const risp_data
 		return;
 	}
 	
-	// grab the pointer of the storage object for easier use.
+	// grab the pointer of the namespace object for easier use.
 	assert(risp_isset(rdata, STASH_CMD_NAMESPACE_ID));
  	ns = storage_getnamespace(_storage, risp_getvalue(rdata, STASH_CMD_NAMESPACE_ID), NULL);
-	
 	if (ns == NULL) {
 		// we dont have this namespace.
 		client->failcode = STASH_ERR_NSNOTEXIST;
@@ -1380,7 +1370,6 @@ static void cmdSet(client_t *client, const risp_length_t length, const risp_data
 	assert(ns);
 	assert(risp_isset(rdata, STASH_CMD_TABLE_ID));
 	table = storage_gettable(_storage, ns, risp_getvalue(rdata, STASH_CMD_TABLE_ID), NULL);
-
 	if (table == NULL) {
 		// the table doesnt exist.
 		client->failcode = STASH_ERR_TABLENOTEXIST;
@@ -1496,24 +1485,8 @@ static void cmdSet(client_t *client, const risp_length_t length, const risp_data
 		key = storage_getkey(table, rawattr->keyid, NULL);
 		assert(key);
 		
-		// need to ensure that the key doesnt already exist for this row.
-// 		attr_t *tmp_attr;
-// 		attr = NULL;
-// 		ll_start(row->attrlist);
-// 		while(attr == NULL && (tmp_attr = ll_next(row->attrlist))) {
-// 			if (tmp_attr->key == key) {
-				// we have a match where the key already exists for the table.
-				// we need to look at the table mode to see what to do here.
-// 				assert(0);
-				
-// 				attr = tmp_attr;
-// 			}
-// 		}
-// 		ll_finish(row->attrlist);
-		
 		// set the attribute.
 		assert(rawattr->expires >= 0);
-
 		
 		if (rawattr->value->valtype == STASH_VALTYPE_AUTO) {
 			autoval = 1;
@@ -1529,7 +1502,8 @@ static void cmdSet(client_t *client, const risp_length_t length, const risp_data
 		if (autoval == 1) {
 			assert(BUF_LENGTH(buf_value) == 0);
 			assert(attr->value->valtype == STASH_VALTYPE_INT);
-			stash_build_value(buf_value, attr->value);
+			assert(_storage);
+			build_storage_value(_storage, buf_value, attr->value);
 			
 			rispbuf_addInt(buf_attr, STASH_CMD_KEY_ID, attr->key->kid);
 			rispbuf_addBuffer(buf_attr, STASH_CMD_VALUE, buf_value);
@@ -1915,7 +1889,7 @@ static void cmdSortEntry(client_t *client, const risp_length_t length, const ris
 }
 
 
-static int compare_value(stash_value_t *va, stash_value_t *vb)
+static int compare_value(value_t *va, value_t *vb)
 {
 	int result = 0;
 	
@@ -1925,7 +1899,7 @@ static int compare_value(stash_value_t *va, stash_value_t *vb)
 		result = va->value.number - vb->value.number;
 	}
 	else if (va->valtype == STASH_VALTYPE_STR && vb->valtype == STASH_VALTYPE_STR) {
-		result = strncmp(va->value.str, vb->value.str, vb->datalen < va->datalen ? vb->datalen : va->datalen);
+		result = strncmp(va->value.str.ptr, vb->value.str.ptr, vb->value.str.datalen < va->value.str.datalen ? vb->value.str.datalen : va->value.str.datalen);
 	}
 	else {
 		// need to compare other type combinations.
@@ -2093,6 +2067,56 @@ static void sortRows(list_t *rows, sortentry_t *sort)
 }
 
 
+static void build_net_value(storage_t *storage, expbuf_t *buf, value_t *value)
+{
+	assert(storage && buf && value);
+	
+	assert(BUF_LENGTH(buf) == 0);
+	
+	switch (value->valtype) {
+		
+		case VALTYPE_INT:
+			rispbuf_addInt(buf, STASH_CMD_INTEGER, value->value.number);
+			break;
+			
+		case VALTYPE_STR:
+			assert(value->value.str.datalen >= 0);
+			if (value->value.str.datalen == 0) {
+				rispbuf_addCmd(buf, STASH_CMD_NULL);
+			}
+			else {
+				assert(value->value.str.ptr);
+				rispbuf_addStr(buf, STASH_CMD_STRING, value->value.str.datalen, value->value.str.ptr);
+			}
+			break;
+			
+		case VALTYPE_BLOB:
+			// the blob needs to be read from file and converted to a string.
+			assert(value->value.blob.datalen > 0);
+			assert(_storage);
+			expbuf_t *buffer = storage_get_blob(_storage, value->value.blob.datalen, value->value.blob.seq, value->value.blob.id);
+			assert(buffer);
+			rispbuf_addStr(buf, STASH_CMD_STRING, BUF_LENGTH(buffer), BUF_DATA(buffer));
+			expbuf_free(buffer);
+			break;
+			
+		default:
+			assert(0);
+			// 				STASH_CMD_DATETIME <str>  [optional]
+			// 				STASH_CMD_DATE <int32>    [optional]
+			// 				STASH_CMD_TIME <int32>    [optional]
+			// 				STASH_CMD_HASHMAP <>      [optional]
+			// 					STASH_CMD_KEY 
+			// 					STASH_CMD_VALUE <>
+			// 						...
+			break;
+	}
+	
+	// 	printf("value len - %d\n", BUF_LENGTH(buf));
+}
+
+
+
 static void cmdQuery(client_t *client, const risp_length_t length, const risp_data_t *data)
 {
 	risp_t *rdata;
@@ -2244,7 +2268,8 @@ static void cmdQuery(client_t *client, const risp_length_t length, const risp_da
 							if (attr->expires == 0 || attr->expires > currtime) {
 								attr_count ++;
 								
-								stash_build_value(buf_value, attr->value);
+								assert(_storage);
+								build_net_value(_storage, buf_value, attr->value);
 								
 								rispbuf_addInt(buf_attr, STASH_CMD_KEY_ID, attr->key->kid);
 								rispbuf_addBuffer(buf_attr, STASH_CMD_VALUE, buf_value);
@@ -2383,6 +2408,7 @@ static void usage(void) {
 	printf("-c <num>           max simultaneous connections, default is 1024\n");
 	printf("-b <path>          storage path\n");
 	printf("-m <max>           max storage file size (in mb) before splitting (default: 1024).\n");
+	printf("-t <threshold>     data threshold.\n");
 	printf("\n");
 	printf("-d                 run as a daemon\n");
 	printf("-P <file>          save PID in <file>, only used with -d option\n");
@@ -2406,6 +2432,7 @@ static void parse_params(int argc, char **argv)
 	/// Need to check the options in here, there're possibly ones that we dont need.
 	while ((c = getopt(argc, argv, 
 		"m:"    /* max file size before splitting */
+		"t:"    /* data threshold for writing to a file (bytes) */
 		"c:"    /* max connections. */
 		"h"     /* help */
 		"v"     /* verbosity */
@@ -2414,6 +2441,7 @@ static void parse_params(int argc, char **argv)
 		"P:"    /* PID file */
 		"l:"    /* interfaces to listen on */
 		"b:"    /* base directory */
+		"t:"    /* data threshold */
 		)) != -1) {
 		switch (c) {
 			case 'c':
@@ -2457,6 +2485,12 @@ static void parse_params(int argc, char **argv)
 				_maxsplit = atoi(optarg) * 1024 * 1024;
 				if (_maxsplit <= 0) {
 					_maxsplit = DEFAULT_MAX_SPLIT;
+				}
+				break;
+			case 't':
+				_threshold = atoi(optarg);
+				if (_threshold < 0) {
+					_threshold = 0;
 				}
 				break;
 				
@@ -2638,6 +2672,10 @@ int main(int argc, char **argv)
 	assert(_storage);
 	assert(_evbase);
 	storage_set_evbase(_storage, _evbase);
+	
+	if (_threshold > 0) {
+		storage_set_threshold(_storage, _threshold);
+	}
 	
 	// initialise the servers that we listen on.
 	init_servers();

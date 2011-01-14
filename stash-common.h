@@ -26,7 +26,7 @@
 
 #define INIT_BUF_SIZE (1024*32)
 #ifndef MAX_PATH_LEN
-	#define MAX_PATH_LEN  2048
+	#define MAX_PATH_LEN  4096
 #endif
 
 
@@ -46,12 +46,34 @@ typedef stash_rowid_t   rowid_t;
 typedef stash_nameid_t  nameid_t;
 typedef stash_keyid_t   keyid_t;
 
-typedef stash_value_t   value_t;
-
 typedef struct {
 	unsigned int hi;
 	unsigned int lo;
 } transid_t;
+
+
+#define VALTYPE_INT   1
+#define VALTYPE_STR   2
+#define VALTYPE_AUTO  3
+#define VALTYPE_BLOB  4
+typedef struct {
+	short int valtype;
+	union {
+		struct {
+			char *ptr;
+			unsigned int datalen;
+		} str;				// STASH_VALTYPE_STR
+		int number;			// STASH_VALTYPE_INT
+		int *number_ptr;	// STASH_VALTYPE_BIND_INT
+		struct {
+			transid_t id;
+			int seq;
+			unsigned int datalen;
+		} blob;				// STASH_VALTYPE_BLOB
+	} value;
+} value_t;
+
+
 
 typedef struct {
 	nsid_t id;
@@ -191,6 +213,7 @@ typedef struct {
 	
 	int maxsplit;
 	char *basepath;
+	unsigned int threshold;
 } storage_t;
 
 
@@ -246,6 +269,13 @@ void storage_set_evbase(storage_t *storage, struct event_base *evbase);
 
 list_t * storage_query(storage_t *storage, table_t *table, stash_cond_t *condition);
 
+void storage_set_threshold(storage_t *storage, int threshold);
+
+value_t * parse_value(storage_t *storage, const risp_data_t *data, const risp_length_t length);
+void value_free(value_t *value);
+void build_storage_value(storage_t *storage, expbuf_t *buf, value_t *value);
+
+expbuf_t * storage_get_blob(storage_t *storage, int datalen, int seq, transid_t id);
 
 
 #endif

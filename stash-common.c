@@ -25,8 +25,6 @@
 
 
 
-#define MAX_PATH_LEN 2048
-
 
 
 static void cmdFileSeq(storage_t *storage, risp_int_t value)
@@ -637,6 +635,94 @@ static void cmdCreateRow(storage_t *storage, risp_length_t length, void *data)
 }
 
 
+// PERF: use a pool of values so that we dont need to keep malloc'ing new ones.
+// PERF: use a pool of same sized data buffers.
+// PERF: use a single RISP instance instead of creating a new one each time.
+value_t * parse_value(storage_t *storage, const risp_data_t *data, const risp_length_t length)
+{
+	value_t *value;
+	risp_t *rr;
+	risp_length_t processed;
+	char *str;
+	
+	assert(storage && data && length > 0);
+	
+	value = calloc(1, sizeof(*value));
+	assert(value);
+	
+	rr = risp_init(NULL);
+	assert(rr);
+	
+	processed = risp_process(rr, NULL, length, data);
+	assert(processed == length);
+	
+	if (risp_isset(rr, STASH_CMD_INTEGER)) {
+		value->valtype = VALTYPE_INT;
+		value->value.number = risp_getvalue(rr, STASH_CMD_INTEGER);
+	}
+	else if (risp_isset(rr, STASH_CMD_STRING)) {
+		value->value.str.datalen = risp_getlength(rr, STASH_CMD_STRING);
+		value->valtype = VALTYPE_STR;
+		if (value->value.str.datalen > 0) {
+			str = risp_getstring(rr, STASH_CMD_STRING);
+			value->value.str.ptr = strdup(str);
+		}
+		else {
+			value->value.str.ptr = NULL;
+		}
+	}
+	else if (risp_isset(rr, STASH_CMD_AUTO)) {
+		value->valtype = VALTYPE_AUTO;
+		value->value.number = 0;
+	}
+	else if (risp_isset(rr, STASH_CMD_BLOB)) {
+		value->valtype = VALTYPE_BLOB;
+		value->value.blob.datalen = risp_getvalue(rr, STASH_CMD_BLOB);
+		value->value.blob.seq = storage->curr_seq;
+		value->value.blob.id = storage->opdata.trans;
+	}
+	else {
+		assert(0);
+	}
+	
+	rr = risp_shutdown(rr);
+	assert(rr == NULL);
+	
+	return(value);
+}
+
+
+static void delete_file(storage_t *storage, int seq, transid_t id)
+{
+	char fullpath[MAX_PATH_LEN];
+	int n;
+	
+	assert(seq >= 0 && storage);
+	
+	n = snprintf(fullpath, MAX_PATH_LEN, "%s/%08d/%010u-%010u", storage->basepath, seq, id.hi, id.lo);
+	assert(n < MAX_PATH_LEN);
+	unlink(fullpath);
+}
+
+
+// release the contents of the value object.
+void free_value(value_t *value)
+{
+	assert(value);
+	
+	if (value->valtype == STASH_VALTYPE_STR) {
+		if (value->value.str.datalen > 0) {
+			assert(value->value.str.ptr);
+			free(value->value.str.ptr);
+		}
+		else {
+			assert(value->value.str.ptr == NULL);
+		}
+	}
+	free(value);
+}
+
+
 // 	STASH_CMD_SET <>
 // 		STASH_CMD_NAMESPACE_ID <int32>
 // 		STASH_CMD_TABLE_ID <int32>
@@ -689,9 +775,13 @@ static void cmdSet(storage_t *storage, risp_length_t length, void *data)
 	
 	// need to get the value out.
 	assert(risp_isset(storage->risp_data, STASH_CMD_VALUE));
-	value = stash_parse_value(risp_getdata(storage->risp_data, STASH_CMD_VALUE), risp_getlength(storage->risp_data, STASH_CMD_VALUE));
+	value = parse_value(storage, risp_getdata(storage->risp_data, STASH_CMD_VALUE), risp_getlength(storage->risp_data, STASH_CMD_VALUE));
 	assert(value);
-	assert(value->valtype != STASH_VALTYPE_AUTO);
+	
+	if (value->valtype == VALTYPE_BLOB) {
+		// if we have a blob type, we need to get the hi/lo and store.
+		value->value.blob.id = storage->opdata.trans;
+	}
 	
 	// now that we have all the data, we need to get the existing attribute for this key, from the row, if it exists.  If it doesn't exist, then we will need to create one.
 	attr = NULL;
@@ -703,7 +793,12 @@ static void cmdSet(storage_t *storage, risp_length_t length, void *data)
 		assert(attr->row == row);
 		assert(attr->key == key);
 		
-		stash_free_value(attr->value);
+		// if the existing value is a blob that we are over-writing, then we also need to delete the blob file.
+		if (attr->value->valtype == VALTYPE_BLOB) {
+			delete_file(storage, attr->value->value.blob.seq, attr->value->value.blob.id);
+		}
+		
+		free_value(attr->value);
 		attr->value = value;
 		attr->expires = expires;
 	}
@@ -801,7 +896,7 @@ static void free_attr(attr_t *attr)
 	
 	// free the value.
 	assert(attr->value);
-	stash_free_value(attr->value);
+	free_value(attr->value);
 	
 	
 	// remove the attribute from the keylist.  The keylist is an index, and so 
@@ -1618,6 +1713,8 @@ static void split_file(storage_t *storage)
 	expbuf_purge(storage->writebuf, n);
 	assert(BUF_LENGTH(storage->writebuf) == 0);
 	
+	snprintf(fullpath, MAX_PATH_LEN, "%s/%08d", storage->basepath, storage->curr_seq);
+	mkdir(fullpath, S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH);
 }
 
 static void write_callback(const int fd, const short which, void *arg)
@@ -2287,6 +2384,81 @@ skey_t * storage_create_key(storage_t *storage, user_t *requestor, table_t *tabl
 
 
 
+static void file_write(storage_t *storage, unsigned int datalen, void *data)
+{
+	char fullpath[MAX_PATH_LEN];
+	int n;
+	int fh;
+	
+	assert(storage && datalen > 0 && data);
+	
+	n = snprintf(fullpath, MAX_PATH_LEN, "%s/%08d/%010u-%010u", storage->basepath, storage->curr_seq, storage->next_trans.hi, storage->next_trans.lo);
+	assert(n < MAX_PATH_LEN);
+
+	mode_t mode = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
+	fh = open(fullpath, O_CREAT | O_WRONLY, mode);
+	if (fh >= 0) {	
+
+		n = write(fh, data, datalen);
+		assert(n == datalen);
+		
+		close(fh);
+	}
+	else {
+		// what happens if it cant create the file?
+		assert(0);
+	}
+}
+
+
+void build_storage_value(storage_t *storage, expbuf_t *buf, value_t *value)
+{
+	assert(storage && buf && value);
+	
+	assert(BUF_LENGTH(buf) == 0);
+	
+	switch (value->valtype) {
+		
+		case VALTYPE_INT:
+			rispbuf_addInt(buf, STASH_CMD_INTEGER, value->value.number);
+			break;
+			
+		case VALTYPE_STR:
+			assert(value->value.str.datalen >= 0);
+			if (value->value.str.datalen == 0) {
+				rispbuf_addCmd(buf, STASH_CMD_NULL);
+			}
+			else {
+				assert(value->value.str.ptr);
+				rispbuf_addStr(buf, STASH_CMD_STRING, value->value.str.datalen, value->value.str.ptr);
+			}
+			break;
+
+		case VALTYPE_BLOB:
+			// the internal information should match the actual transaction number that this will be, so we dont need to include all that.  We simply include a data length, that can be used when reading in the file.
+			rispbuf_addInt(buf, STASH_CMD_BLOB, value->value.blob.datalen);
+			break;
+			
+		default:
+			assert(0);
+			// 				STASH_CMD_DATETIME <str>  [optional]
+			// 				STASH_CMD_DATE <int32>    [optional]
+			// 				STASH_CMD_TIME <int32>    [optional]
+			// 				STASH_CMD_HASHMAP <>      [optional]
+			// 					STASH_CMD_KEY 
+			// 					STASH_CMD_VALUE <>
+			// 						...
+			break;
+	}
+	
+	// 	printf("value len - %d\n", BUF_LENGTH(buf));
+}
+
+
+
+
+
+
 
 attr_t * storage_setattr(storage_t *storage, user_t *requestor, row_t *row, skey_t *key, value_t *value, int expires)
 {
@@ -2328,10 +2500,25 @@ attr_t * storage_setattr(storage_t *storage, user_t *requestor, row_t *row, skey
 		key->auto_value ++;
 		assert(key->auto_value > 0);
 	}
-	
+	else if (value->valtype == STASH_VALTYPE_STR) {
+		if (storage->threshold > 0 && value->value.str.datalen > storage->threshold) {
+			
+			// the string is over the threshold, so write the data out to a file.
+			file_write(storage, value->value.str.datalen, value->value.str.ptr);
+			
+			// free the data from the structure.
+			free(value->value.str.ptr);
+			
+			int dl = value->value.str.datalen;
+			value->value.blob.datalen = dl;
+			value->value.blob.seq = storage->curr_seq;
+			value->value.blob.id = storage->next_trans;
+			value->valtype = VALTYPE_BLOB;
+		}
+	}
 	
 	assert(storage->buf_value);
-	stash_build_value(storage->buf_value, value);
+	build_storage_value(storage, storage->buf_value, value);
 	assert(BUF_LENGTH(storage->buf_value) > 0);
 	rispbuf_addBuffer(storage->buf_data, STASH_CMD_VALUE, storage->buf_value);
 	expbuf_clear(storage->buf_value);
@@ -2574,3 +2761,65 @@ void storage_delete(storage_t *storage, user_t *requestor, row_t *row, skey_t *k
 	saveOperation(storage, STASH_CMD_DELETE, storage->buf_data, requestor->uid);
 	expbuf_clear(storage->buf_data);
 }
+
+
+void storage_set_threshold(storage_t *storage, int threshold)
+{
+	assert(storage);
+	assert(threshold >= 0);
+	
+	storage->threshold = threshold;
+}
+
+
+void value_free(value_t *value)
+{
+	if (value->valtype == STASH_VALTYPE_STR) {
+		assert((value->value.str.datalen == 0 && value->value.str.ptr == NULL) || (value->value.str.datalen > 0 && value->value.str.ptr));
+		if (value->value.str.ptr) {
+			free((void*)value->value.str.ptr);
+		}
+	}
+	free(value);
+}
+
+
+expbuf_t * storage_get_blob(storage_t *storage, int datalen, int seq, transid_t id)
+{
+	expbuf_t *buffer = NULL;
+	FILE *fp;
+	int left, chunk;
+	char fullpath[MAX_PATH_LEN];
+	int n;
+	
+	assert(storage && datalen > 0 && seq >= 0);
+	
+	left = datalen;
+	
+	n = snprintf(fullpath, MAX_PATH_LEN, "%s/%08d/%010u-%010u", storage->basepath, seq, id.hi, id.lo);
+	assert(n < MAX_PATH_LEN);
+	
+	fp = fopen(fullpath, "r");
+	if (fp) {
+		assert(fp);
+		
+		buffer = expbuf_init(NULL, datalen);
+		
+		while (left > 0) {
+			chunk = left;	// make sure chunk is not too big.
+			if (chunk > 4096) chunk = 4096;
+			
+			n = fread(BUF_DATA(buffer), chunk, 1, fp);
+			assert(n == 1);
+			BUF_LENGTH(buffer) += chunk;
+			left -= chunk;
+		}
+		assert(left == 0);
+		
+		fclose(fp);
+	}
+	
+	return(buffer);
+}
+
+

@@ -34,7 +34,7 @@
 // global variables.
 
 short int verbose = 0;
-int max_loop = 50000;
+int max_loop = 500;
 
 
 
