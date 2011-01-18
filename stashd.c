@@ -1813,8 +1813,8 @@ static stash_cond_t * parse_condition(table_t *table, const risp_length_t length
 	else if (risp_isset(risp, STASH_CMD_COND_EXISTS)) {
 		cond->condtype = STASH_CONDTYPE_EXISTS;
 		
-		len = risp_getlength(risp, STASH_CMD_COND_EQUALS);
-		processed = risp_process(risp_data, NULL, len, risp_getdata(risp, STASH_CMD_COND_EQUALS));
+		len = risp_getlength(risp, STASH_CMD_COND_EXISTS);
+		processed = risp_process(risp_data, NULL, len, risp_getdata(risp, STASH_CMD_COND_EXISTS));
 		assert(processed == len);
 		
 		assert(risp_isset(risp_data, STASH_CMD_KEY_ID));

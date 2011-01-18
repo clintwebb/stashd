@@ -782,6 +782,13 @@ static void cmdSet(storage_t *storage, risp_length_t length, void *data)
 		// if we have a blob type, we need to get the hi/lo and store.
 		value->value.blob.id = storage->opdata.trans;
 	}
+	else if (value->valtype == VALTYPE_INT) {
+		if (value->value.number >= key->auto_value) {
+			key->auto_value = value->value.number + 1;
+		}
+	}
+	
+	
 	
 	// now that we have all the data, we need to get the existing attribute for this key, from the row, if it exists.  If it doesn't exist, then we will need to create one.
 	attr = NULL;
@@ -2584,11 +2591,16 @@ static int compare_cond(row_t *row, stash_cond_t *condition)
 			assert(attr->key == condition->key_ptr);
 			assert(attr->value);
 			assert(condition->value);
+		
 			
 			if (attr->value->valtype == condition->value->valtype) {
 				if (attr->value->valtype == STASH_VALTYPE_INT) {
+// 					printf("cond: Equals (%d == %d)\n", attr->value->value.number, condition->value->value.number);
 					if (attr->value->value.number == condition->value->value.number) {
 						result = 1;
+					}
+					else {
+						assert(result == 0);
 					}
 				}
 				else {
@@ -2627,15 +2639,22 @@ static int compare_cond(row_t *row, stash_cond_t *condition)
 		// exist.  Which will of course generate a fail when compared against 
 		// the row->name.
 		assert(row->name);
+		
+// 		printf("cond: Name ('%s' == '%s')\n", row->name->name, condition->name_ptr->name);
+		
+		
 		if (condition->name_ptr == row->name) {
 			result = 1;
-		} 
+		}
+		else {
+			assert(result == 0);
+		}
 	}
 	else if (condition->condtype == STASH_CONDTYPE_AND) {
 		assert(condition->ca);
 		assert(condition->cb);
 		
-		if (compare_cond(row, condition->ca) == 1 && compare_cond(row, condition->ca) == 1) {
+		if (compare_cond(row, condition->ca) == 1 && compare_cond(row, condition->cb) == 1) {
 			result = 1;
 		}
 	}
@@ -2643,7 +2662,7 @@ static int compare_cond(row_t *row, stash_cond_t *condition)
 		assert(condition->ca);
 		assert(condition->cb);
 		
-		if (compare_cond(row, condition->ca) == 1 || compare_cond(row, condition->ca) == 1) {
+		if (compare_cond(row, condition->ca) == 1 || compare_cond(row, condition->cb) == 1) {
 			result = 1;
 		}
 	}
